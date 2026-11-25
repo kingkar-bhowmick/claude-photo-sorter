@@ -33,10 +33,10 @@ Never read `Photos Library.photoslibrary` directly.
 
 1. Scan: inventory, sha256, 256px previews plus 72px copies for the animation (skipped if the same folder was already scanned).
 2. Duplicates: identical files and look-alikes (bursts, re-saved screenshots).
-3. Labels: `scripts/label_claude.py` runs `claude -p` in the background, 4 at a time, about 90 files per call, using the person's own Claude plan. Under **Advanced** they can pick Jev instead.
+3. Labels: `scripts/label_codex.py` sends contact sheets of small previews to Codex using the person's ChatGPT sign-in. It checks that every photo and video has a valid folder and saves labels for retry. Under **Advanced** they can pick Claude or Jev.
 4. Build folders: copies into `<their folder> (sorted)` or wherever they chose.
 
-Photos fly into their folders as labels come in. After sorting: **Sort with Claude** replays the animation (good for screen recording, `?d=20` makes it slower), **New sort** picks new folders, clicking a folder browses it, and a photo can be moved to another folder from the full-size view.
+Photos fly into their folders as labels come in. After sorting, **Replay sort** replays the animation (`?d=20` makes it slower), **New sort** picks new folders, clicking a folder browses it, and a photo can be moved to another folder from the full-size view.
 
 ## If they'd rather do it in this chat
 
@@ -45,9 +45,10 @@ Photos fly into their folders as labels come in. After sorting: **Sort with Clau
 | Scan | `.venv/bin/python scripts/scan.py "<photos folder>" [--limit 200]` |
 | Duplicates | `.venv/bin/python scripts/dupes.py` (check `work/duplicates.jpg`) |
 | Sample sheets | `.venv/bin/python scripts/sheets.py --sample` (look at `work/sample/` to suggest folders) |
+| Labels (Codex) | `.venv/bin/python scripts/label_codex.py` |
 | Labels (Claude) | `.venv/bin/python scripts/label_claude.py` |
 | Labels (Jev, paid) | `.venv/bin/python scripts/label_jev.py --estimate`, then without `--estimate` |
-| Build folders | `.venv/bin/python scripts/apply.py "<output folder>"` |
+| Build folders | `.venv/bin/python scripts/apply.py "<output folder>" --labeler codex` for Codex, or omit the flag for the other labelers and manual labels |
 
 The open dashboard refreshes itself when these run.
 
@@ -58,7 +59,7 @@ The open dashboard refreshes itself when these run.
 ## If something breaks
 
 - Port 8765 busy: `PORT=8766 ./start.sh`.
-- "claude command not found" during sorting: Claude Code isn't on PATH for the server. Restart with `./start.sh` from a terminal where `claude` works, or pick Jev under Advanced.
-- A batch failed: press Start sorting again. Finished batches are kept.
+- Codex sign-in failed: run `codex login` in Terminal with the user's ChatGPT account. If the command is missing, install the Codex CLI and reopen the dashboard.
+- Labeling or copying failed: press **Try again** to reuse saved labels, or **Change folders** to choose another destination.
 - HEIC photos fail to open: `.venv/bin/pip install -U pillow-heif`.
 - Jev 401: the key in `.env` is wrong. Jev 400 "Invalid image dimensions": leave `JEV_MODEL` unset.

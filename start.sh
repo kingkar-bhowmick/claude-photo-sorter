@@ -3,6 +3,7 @@
 #   ./start.sh          your photos
 #   ./start.sh --demo   a fake camera roll, to see what it looks like
 cd "$(dirname "$0")"
+export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.npm-global/bin"
 PORT="${PORT:-8765}"
 URL="http://127.0.0.1:$PORT/"
 [ "$1" = "--demo" ] && URL="${URL}?demo"

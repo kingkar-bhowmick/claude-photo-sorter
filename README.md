@@ -1,6 +1,6 @@
-# Claude photo sorter
+# Photo Sorter
 
-Point Claude at your camera roll. It looks at every photo and video, sorts them into folders, finds your duplicates, and you watch it happen on a live dashboard on your own laptop.
+Sort a camera roll into folders with Codex, review possible duplicates, and watch the progress in a dashboard on your computer.
 
 ![The dashboard sorting a camera roll](docs/preview.gif)
 
@@ -8,22 +8,22 @@ Point Claude at your camera roll. It looks at every photo and video, sorts them 
 
 - **Sorts photos and videos** into folders like Selfies, Food, Travel, Screenshots, Talking heads and Screen recordings. Use the standard folders or make your own.
 - **Finds duplicates**: identical copies, burst shots and re-saved screenshots go to a `_Review` folder, with a list of which copy was kept.
-- **Never touches your originals.** It only reads them and makes sorted copies. On a Mac the copies take no extra space.
-- **Runs on your computer.** Your photos are not uploaded anywhere.
+- **Makes sorted copies.** Your originals stay where they are. macOS can make space-saving copies on the same APFS volume.
+- **Runs on your computer.** The labeler receives small previews.
 
 ## Start here (no coding needed)
 
-You need a Mac and a Claude plan. Windows and Linux work too, with a few less conveniences.
+The default labeler uses the Codex CLI and a ChatGPT account with Codex access. Windows and Linux also work, with fewer folder-picker conveniences.
 
-**1. Install Claude Code** from [claude.com/claude-code](https://claude.com/claude-code). Then open the **Terminal** app (press `⌘ Space`, type *Terminal*, press Enter), type `claude` and press Enter.
+**1. Install the [Codex CLI](https://developers.openai.com/codex/cli).** Open Terminal, run `codex login`, and sign in with ChatGPT.
 
-**2. Paste this to Claude:**
+**2. Paste this to Codex:**
 
 ```
 Set up and open https://github.com/kairothq/claude-photo-sorter
 ```
 
-Claude downloads it, sets it up and opens the dashboard in your browser.
+Codex downloads it, sets it up and opens the dashboard in your browser.
 
 **3. In the dashboard:**
 
@@ -31,7 +31,7 @@ Claude downloads it, sets it up and opens the dashboard in your browser.
 2. Pick where the sorted copies should go. The default is right next to your photos.
 3. Press **Start sorting**.
 
-It shows how long it usually takes, then sorts on its own while you watch every photo fly into its folder. About 4 minutes for 1,000 photos.
+The dashboard estimates the time and shows progress as labels come in and copies are made.
 
 <details>
 <summary>Don't have your photos on your computer yet?</summary>
@@ -45,7 +45,7 @@ It shows how long it usually takes, then sorts on its own while you watch every 
 The dashboard lives at **http://127.0.0.1:8765** while it's running. To open it again later, either:
 
 - double-click **Open Photo Sorter.command** in the `claude-photo-sorter` folder (it's in your home folder), or
-- tell Claude "open my photo sorter".
+- tell Codex "open my photo sorter".
 
 Press **New sort** to sort a different folder, or send the copies somewhere else.
 
@@ -53,9 +53,9 @@ Press **New sort** to sort a different folder, or send the copies somewhere else
 
 | | |
 |---|---|
-| **Sort with Claude** | Before sorting: asks for anything missing, then starts. After sorting: replays the animation (good for screen recording). Add `?d=20` to the address for a slower take. |
+| **Sort with Codex** | Asks for the source or destination if needed, then starts sorting. Afterward, **Replay sort** replays the animation. Add `?d=20` to the address for a slower take. |
 | **New sort** | Pick a new photos folder and a new place for the copies. |
-| **Advanced** (in the setup card) | See the folders that will be made, remove any, or press **+** to add your own. Choose Claude or Jev. Try 200 photos first. |
+| **Advanced** (in the setup card) | Edit the list of folders, select Codex, Claude, or Jev, or try 200 files first. |
 | **Click a folder** | Browse everything in it. Click a photo to see it full size, flip with the arrow keys, and **Move to** another folder if it's wrong. |
 | **Edit folders** | Rename folders and describe what goes in each. |
 | **Open sorted folder** | Opens the result in Finder. |
@@ -67,23 +67,16 @@ Want a look without your own photos? Run `./start.sh --demo`.
 
 1. **Scan**: makes a small preview of every file and a fingerprint to spot copies. Your originals are only read.
 2. **Duplicates**: compares fingerprints, plus a pixel check for screenshots so similar app screens aren't mistaken for copies.
-3. **Labels**: runs Claude Code in the background (`claude -p`), four at a time, each looking at about 90 previews and picking a folder for each. This uses your Claude plan and needs no API key.
+3. **Labels**: Codex looks at one sheet of up to 30 previews per request, with two requests at a time. The sorter checks each label and saves valid answers so retries can pick up where they stopped.
 4. **Folders**: copies each file into its folder, and duplicates into `_Review/duplicates`. Writes `sorted.csv` and `duplicates.csv`.
 
-### Claude or Jev?
-
-| | Claude (default) | Jev (Advanced, optional) |
-|---|---|---|
-| What | Claude Code reads contact sheets of 30 previews | [TypeSafe's](https://typesafe.ai) Jev 1.14 image model, one question per file |
-| Cost | Included in your Claude plan | Billed per file, about 980 tokens each. Shows an estimate and asks first |
-| Speed | About a minute per 1,000 files | About 75 seconds per 1,000 files |
-| Setup | Nothing | Put `JEV_KEY=your-key` in a `.env` file in this folder |
+Claude remains available under **Advanced** for users signed in to Claude Code. [TypeSafe's Jev](https://typesafe.ai) requires `JEV_KEY` in a local `.env` file. It shows a token estimate and asks before running.
 
 ## Privacy
 
 - The dashboard only listens on `127.0.0.1`, so nothing else on your network can reach it.
 - Previews, labels and the file list stay in `dashboard/data/` and `work/`, which are never committed.
-- With Claude, the small previews are read by Claude Code the same way as anything else you share with it. With Jev, a 280px preview of each file goes to TypeSafe's API. Originals never leave your computer.
+- Codex sends contact sheets of small previews to OpenAI using your ChatGPT sign-in and Codex allowance. Claude and Jev send previews to their own services. The original files stay on your computer.
 
 ## Running it by hand
 
@@ -92,7 +85,7 @@ Want a look without your own photos? Run `./start.sh --demo`.
 ./start.sh          # opens http://127.0.0.1:8765
 ```
 
-Every step is also a script in `scripts/` (`scan.py`, `dupes.py`, `label_claude.py`, `label_jev.py`, `apply.py`). Agents read `CLAUDE.md` (or `AGENTS.md`) for the full playbook. Needs Python 3.9+, and ffmpeg for video previews (`brew install ffmpeg`).
+Run `.venv/bin/python scripts/label_codex.py` after scanning to label from the command line, then run `.venv/bin/python scripts/apply.py "<output folder>" --labeler codex` to copy the files. See `CLAUDE.md` for all commands. The sorter needs Python 3.9+ and ffmpeg for video previews (`brew install ffmpeg`).
 
 ## License
 

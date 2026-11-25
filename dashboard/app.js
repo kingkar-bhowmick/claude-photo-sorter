@@ -62,7 +62,8 @@ $("theme").onclick = () => setTheme(document.documentElement.dataset.theme === "
 let S = {};                                 // server state
 let mode = "loading";                       // setup | running | done
 let cats = [], catBy = {}, items = [], byId = {}, dupeIds = new Set(), labels = {};
-const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "claude", sample: false, typing: null };
+const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "codex", sample: false, typing: null };
+const LABELER_NAMES = { codex: "Codex", claude: "Claude", jev: "Jev" };
 let tiles = [], run = "idle", order = [], released = 0, landed = 0, t0 = 0;
 const queue = [], flown = new Set();
 const stats = { photos: 0, videos: 0, dupes: 0, saved: 0 };
@@ -109,6 +110,7 @@ function setHeader() {
   $("total").textContent = fmt(items.length);
   $("btnOpen").hidden = !(mode === "done" && S.sorted);
   $("btnNew").hidden = mode !== "done";
+  $("go").querySelector("span").textContent = mode === "done" ? "Replay sort" : `Sort with ${LABELER_NAMES[S.job?.running ? S.job.labeler : pick.labeler] || "Codex"}`;
   $("k-checked-s").textContent = items.length && mode !== "setup" ? size(items.reduce((s, r) => s + r.bytes, 0)) + " in total" : "photos & videos";
   document.body.dataset.mode = mode;
 }
@@ -230,7 +232,7 @@ function replay() {
   document.body.classList.remove("is-done");
   buildCards(); sphereFromItems();
   run = "replay"; t0 = performance.now(); released = 0;
-  setPill("busy", "Claude is looking at every photo & video");
+  setPill("busy", "Replaying the sort");
 }
 
 /* ---------- KPIs and the frame loop ---------- */
@@ -285,21 +287,24 @@ function confetti() {
   })(s);
 }
 
-/* ---------- time estimate ----------
-   Measured on a 2020 MacBook with 1,136 files (10.7 GB): scan 125 s, duplicates 6 s,
-   Claude labels about 12 s per 90 files with 4 at a time, building folders 20 s. */
-function phaseEstimates(files, bytes, scan = true) {
-  const batches = Math.ceil(Math.ceil(files / 30) / 3);
+/* ---------- time estimate ---------- */
+function phaseEstimates(files, bytes, scan, labeler) {
+  const sheets = Math.ceil(files / 30);
+  const labelTime = labeler === "codex" ? Math.ceil(sheets / 2) * 15 : Math.ceil(sheets / 12) * 14;
   return {
     scan: scan ? 4 + files * 0.025 + bytes / 1e9 * 9 : 0,
     dupes: 2 + Math.pow(files / 1000, 2) * 4,
-    label: 12 + files * 0.012 + Math.ceil(batches / 4) * 14,
+    label: 12 + files * 0.012 + labelTime,
     apply: 2 + files * 0.018,
   };
 }
-const NAMES = { scan: "Looking at every file", dupes: "Finding duplicates", label: "Claude is sorting your photos", apply: "Building your folders" };
+const NAMES = { scan: "Looking at every file", dupes: "Finding duplicates", apply: "Building your folders" };
+function phaseName(job) {
+  if (job.phase === "label") return `${LABELER_NAMES[job.labeler] || "AI"} is labeling your photos and videos`;
+  return NAMES[job.phase];
+}
 function overallProgress() {
-  const j = S.job || {}; if (!j.phases || !j.phases.length) return 0;
+  const j = S.job || {}; if (!j.phase || !j.phases || !j.phases.length) return 0;
   const est = runEstimates(), total = j.phases.reduce((s, p) => s + est[p], 0) || 1;
   let done = 0;
   for (const p of j.phases) {
@@ -309,7 +314,7 @@ function overallProgress() {
   return j.phase === "done" ? 1 : Math.min(1, done / total);
 }
 let runInfo = { files: 0, bytes: 0 };
-function runEstimates() { return phaseEstimates(runInfo.files, runInfo.bytes, (S.job.phases || []).includes("scan")); }
+function runEstimates() { return phaseEstimates(runInfo.files, runInfo.bytes, (S.job.phases || []).includes("scan"), S.job.labeler); }
 function remaining() {
   const j = S.job, est = runEstimates();
   let left = 0, seen = false;
@@ -366,7 +371,7 @@ function setupCard() {
   if (!pick.dest) {
     box.append(el("div", { class: "q" }, el("span", { class: "n" }, "2"), el("div", {},
       el("h2", {}, "Where should the sorted copies go?"),
-      el("p", {}, "Your originals stay where they are. On a Mac the copies take no extra space."))));
+      el("p", {}, "Your originals stay where they are. Copies to another drive use space on that drive."))));
     const sug = (pk && pk.suggested_dest) || pick.source + " (sorted)";
     if (mac && pick.typing !== "dest") box.append(el("div", { class: "acts col" },
       el("button", { class: "mx-btn solid big-btn", onclick: () => choose("dest", sug) }, icon("check"), "Next to my photos"),
@@ -382,10 +387,11 @@ function setupCard() {
   // 3. start
   const files = pk ? (pick.sample ? Math.min(200, pk.photos + pk.videos) : pk.photos + pk.videos) : 0;
   const bytes = pk ? pk.bytes * (files / Math.max(1, pk.photos + pk.videos)) : 0;
-  const est = phaseEstimates(files, bytes, true), total = Object.values(est).reduce((a, b) => a + b, 0);
+  const est = phaseEstimates(files, bytes, true, pick.labeler), total = Object.values(est).reduce((a, b) => a + b, 0);
   box.append(el("div", { class: "start" },
     el("button", { class: "mx-btn solid big-btn wide", onclick: startSorting }, icon("play"), "Start sorting"),
-    el("p", { class: "meta" }, icon("clock"), pk ? ` Usually ${roughly(total)} for ${fmt(files)} files` : " Counting files…")));
+    el("p", { class: "meta" }, icon("clock"), pk ? ` Estimated ${roughly(total)} for ${fmt(files)} files` : " Counting files…"),
+    pick.labeler === "codex" ? el("p", { class: "meta" }, "Codex sends small previews to OpenAI using your ChatGPT sign-in.") : null));
 
   // advanced
   box.append(el("button", { class: "adv-toggle", "aria-expanded": pick.advanced, onclick: () => { pick.advanced = !pick.advanced; renderPanel(); } },
@@ -417,13 +423,14 @@ function advancedBox(files) {
     return box;
   };
   const lab = (k, title, text, extra) => el("label", { class: "opt" + (pick.labeler === k ? " on" : "") },
-    el("input", { type: "radio", name: "labeler", checked: pick.labeler === k, onchange: () => { pick.labeler = k; renderPanel(); } }),
+    el("input", { type: "radio", name: "labeler", checked: pick.labeler === k, onchange: () => { pick.labeler = k; setHeader(); renderPanel(); } }),
     el("span", {}, el("b", {}, title, extra || ""), el("small", {}, text)));
   return el("div", { class: "adv" },
     el("h4", {}, "Photo folders"), el("div", { class: "fchips" }, chips("photo"), adder("photo")),
     el("h4", {}, "Video folders"), el("div", { class: "fchips" }, chips("video"), adder("video")),
     el("p", { class: "meta" }, "The last folder of each kind catches everything that fits nowhere else."),
     el("h4", {}, "Who looks at the photos"),
+    lab("codex", "Codex", "Uses your ChatGPT sign-in and Codex allowance."),
     lab("claude", "Claude", "Uses your Claude plan. No key needed."),
     lab("jev", "Jev by TypeSafe ", S.jev_key ? `Fast image model, billed per file: about ${fmt(files * TOKENS_PER_FILE)} tokens.` : "Needs JEV_KEY=your-key in a .env file in this folder.",
       el("span", { class: "paid" }, "PAID")),
@@ -465,7 +472,7 @@ function resetStageForSetup() {
 }
 
 /* Top-bar button: asks for whatever is missing, then starts. After sorting it replays. */
-function sortWithClaude() {
+function sortOrReplay() {
   if (mode === "running") return;
   if (mode === "done") return replay();
   if (!pick.source) return S.platform === "darwin" ? pickFolder("source") : (pick.typing = "source", renderPanel());
@@ -473,23 +480,28 @@ function sortWithClaude() {
   startSorting();
 }
 
+let starting = false;
 async function startSorting() {
-  if (!pick.source || !pick.dest) return sortWithClaude();
+  if (!pick.source || !pick.dest) return sortOrReplay();
+  if (starting) return;
   const files = pick.peek ? pick.peek.photos + pick.peek.videos : 0;
-  if (pick.labeler === "jev") {
-    if (!S.jev_key) return toast("Add JEV_KEY=your-key to a .env file in this folder to use Jev.");
-    if (!await confirmPaid(Math.min(files, pick.sample ? 200 : files))) return;
-  }
-  if (pick.labeler === "claude" && S.claude_cli === false) return toast("Claude Code isn't installed on this computer. Install it, or pick Jev under Advanced.");
+  starting = true;
   try {
+    if (pick.labeler === "jev") {
+      if (!S.jev_key) return toast("Add JEV_KEY=your-key to a .env file in this folder to use Jev.");
+      if (!await confirmPaid(Math.min(files || S.files || 0, pick.sample ? 200 : Infinity))) return;
+    }
+    if (pick.labeler === "codex" && S.codex_cli === undefined) return toast("Restart the photo sorter to enable Codex.");
+    if (pick.labeler === "codex" && !S.codex_cli) return toast("Install the Codex CLI, then reopen the photo sorter.");
+    if (pick.labeler === "claude" && S.claude_cli === false) return toast("Install Claude Code or choose Codex under Advanced.");
     S = await api("/api/sort", { source: pick.source, dest: pick.dest, labeler: pick.labeler, limit: pick.sample ? 200 : 0 });
-  } catch (e) { return; }
-  runInfo = { files: pick.sample ? Math.min(200, files) : files, bytes: pick.peek ? pick.peek.bytes * (pick.sample ? Math.min(1, 200 / Math.max(1, files)) : 1) : 0 };
-  beginRunning();
+    runInfo = { files: pick.sample ? Math.min(200, files) : files, bytes: pick.peek ? pick.peek.bytes * (pick.sample ? Math.min(1, 200 / Math.max(1, files)) : 1) : 0 };
+    beginRunning();
+  } catch (e) { return; } finally { starting = false; }
 }
 
 /* ---------- running: poll the server and animate as labels arrive ---------- */
-let monitor, lastLabelsAt = 0, libraryLoaded = false, dupesMarked = false, finishing = false;
+let monitor, polling = false, lastLabelsAt = 0, libraryLoaded = false, dupesMarked = false, finishing = false;
 function beginRunning() {
   mode = "running"; run = "live"; libraryLoaded = false; dupesMarked = false; finishing = false;
   queue.length = 0;
@@ -501,12 +513,17 @@ function beginRunning() {
   pollRun();
 }
 async function pollRun() {
+  if (polling) return;
+  polling = true;
+  try { await refreshRun(); } finally { polling = false; }
+}
+async function refreshRun() {
   let s;
   try { s = await fetch("/api/state", { cache: "no-store" }).then(r => r.json()); } catch (e) { return; }
   S = s;
   const j = S.job;
   if (!runInfo.files) runInfo = { files: S.files || 0, bytes: S.bytes || 0 };
-  setPill("busy", NAMES[j.phase] || "Working");
+  setPill("busy", phaseName(j) || "Working");
   // after the scan, swap the preview sphere for the real library
   if (!libraryLoaded && j.phase && j.phase !== "scan") {
     libraryLoaded = true;
@@ -549,19 +566,21 @@ function runCard() {
   });
   const pct = j.total ? Math.round(j.done / j.total * 100) : 0;
   return el("div", { class: "run" },
-    el("div", { class: "run-h" }, el("b", {}, failed ? "Something went wrong" : NAMES[j.phase] || "Getting ready"),
+    el("div", { class: "run-h" }, el("b", {}, failed ? "Sorting stopped" : phaseName(j) || "Getting ready"),
       el("span", { class: "num", id: "timer" }, "")),
     el("div", { class: "pbar" }, el("i", { style: `width:${failed ? 100 : pct}%` })),
     el("ol", { class: "phases" }, steps),
     failed ? el("pre", { class: "log" }, (j.log || []).slice(-8).join("\n")) : null,
-    failed ? el("button", { class: "mx-btn small solid", onclick: startSorting }, "Try again") : null);
+    failed ? el("div", { class: "acts" },
+      el("button", { class: "mx-btn small solid", onclick: startSorting }, "Try again"),
+      el("button", { class: "mx-btn small", onclick: () => { const source = pick.source; newSort(); if (source) choose("source", source); } }, "Change folders")) : null);
 }
 function paintTimer() {
   const t = $("timer"); if (!t || !S.job || !S.job.started) return;
   const now = Date.now() / 1000;
   const elapsed = S.job.running ? now - S.job.started : S.job.now - S.job.started;
   const left = S.job.running ? remaining() - (now - S.job.now) : 0;
-  t.textContent = `${mmss(Math.max(0, elapsed))} · ${S.job.running ? (left > 5 ? roughly(left) + " left" : "almost done") : "done"}`;
+  t.textContent = `${mmss(Math.max(0, elapsed))} · ${S.job.running ? (left > 5 ? roughly(left) + " left" : "almost done") : S.job.code ? "stopped" : "done"}`;
 }
 
 /* ---------- dialogs: edit folders, browse a folder, view a photo, paid confirm ---------- */
@@ -617,7 +636,7 @@ function openFolders() {
     el("div", { class: "fb-dialog", role: "dialog", "aria-label": "Edit folders" },
       el("div", { class: "fb-head" }, el("h2", {}, "Folders"), el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x"))),
       el("div", { class: "fb-rows" }, list,
-        el("p", { class: "note" }, "The rule is what Claude reads, so describe each folder the way you'd explain it to a friend.")),
+        el("p", { class: "note" }, "Describe what belongs in each folder so the labeler can apply your rules.")),
       el("div", { class: "fb-foot" },
         el("button", { class: "mx-btn", onclick: add("photo") }, icon("plus"), "Photo folder"),
         el("button", { class: "mx-btn", onclick: add("video") }, icon("plus"), "Video folder"),
@@ -702,8 +721,11 @@ async function init() {
     setCats(S.categories);
   }
   buildCards();
-  if (!DEMO && S.job && S.job.running && S.job.step === "sort") {
-    pick.source = S.source;
+  if (!DEMO && S.job?.step === "sort" && (S.job.running || S.job.code)) {
+    pick.source = S.job.request?.source || S.source;
+    pick.dest = S.job.request?.dest;
+    pick.sample = Boolean(S.job.request?.limit ?? S.limit);
+    pick.labeler = S.job.labeler || "claude";
     runInfo = { files: S.files, bytes: S.bytes };
     beginRunning();
   } else if (DEMO || (S.steps && S.steps.apply)) {
@@ -722,7 +744,7 @@ async function init() {
   }
   if (params.has("auto") && mode === "done") setTimeout(replay, 1200);
 }
-$("go").onclick = sortWithClaude;
+$("go").onclick = sortOrReplay;
 $("btnNew").onclick = newSort;
 $("btnFolders").onclick = openFolders;
 $("btnOpen").onclick = () => api("/api/open", {}).catch(() => {});

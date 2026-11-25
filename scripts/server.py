@@ -1,7 +1,7 @@
 """The dashboard app.  python scripts/server.py   ->  http://127.0.0.1:8765
 
 Serves dashboard/ plus a small local API so the page can do everything itself:
-pick folders, peek at a folder, run the whole sort (scan, duplicates, Claude labels,
+pick folders, peek at a folder, run the whole sort (scan, duplicates, labels,
 build folders) with live progress, edit folders, browse photos at full size, move a
 photo to another folder, and open folders in Finder.
 Listens on 127.0.0.1 only: nothing is reachable from other computers.
@@ -10,7 +10,10 @@ import glob, hashlib, io, json, mimetypes, os, random, re, shutil, subprocess, s
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import CATEGORIES, DATA, IMG, JEV_OUT, LABELS, ROOT, VID, WORK, load, save
+from apply import apply_lock
+from common import (CATEGORIES, CODEX_LABELS, DATA, IMG, JEV_OUT, LABELS, ROOT, VID, WORK,
+                    load, read_codex_labels, save, sort_destination)
+from label_codex import require_codex
 
 PORT = int(os.environ.get("PORT", 8765))
 DASH = os.path.join(ROOT, "dashboard")
@@ -18,7 +21,10 @@ PEEK = os.path.join(DASH, "peek")
 OVERRIDES = os.path.join(WORK, "overrides.json")
 SCRIPTS = os.path.join(ROOT, "scripts")
 PY = sys.executable
-job = {"step": None, "running": False, "log": [], "code": None, "phase": None, "phases": [], "done": 0, "total": 0,
+LABELERS = {"codex": "label_codex.py", "claude": "label_claude.py", "jev": "label_jev.py"}
+job_lock = threading.Lock()
+job = {"step": None, "labeler": None, "request": {}, "running": False, "log": [],
+       "code": None, "phase": None, "phases": [], "done": 0, "total": 0,
        "started": None, "phase_started": None, "timings": {}}
 
 
@@ -40,21 +46,26 @@ def state():
         "steps": {
             "scan": bool(inv),
             "dupes": os.path.exists(os.path.join(DATA, "dupes.json")),
-            "label": bool(claude_files) or os.path.exists(JEV_OUT),
+            "label": bool(claude_files) or os.path.isdir(CODEX_LABELS) or os.path.exists(JEV_OUT),
             "jev_labels": os.path.exists(JEV_OUT),
             "apply": bool(src.get("sorted")) and os.path.exists(os.path.join(DATA, "labels.json")),
         },
         "jev_key": has_jev_key(),
+        "codex_cli": bool(shutil.which("codex")),
         "claude_cli": bool(shutil.which("claude")),
         "overrides": len(load(OVERRIDES, {})),
-        "job": {k: job[k] for k in ("step", "running", "code", "phase", "phases", "done", "total", "started", "phase_started", "timings")}
+        "job": {k: job[k] for k in ("step", "labeler", "request", "running", "code", "phase", "phases", "done", "total",
+                                  "started", "phase_started", "timings")}
                | {"log": job["log"][-40:], "now": time.time()},
         "platform": sys.platform,
     }
 
 
 def live_labels():
-    """Labels written so far (Claude batches + confident Jev answers), for the live animation."""
+    """Labels written so far, for the live animation."""
+    if job["labeler"] == "codex":
+        recs = load(os.path.join(DATA, "inventory.json"), [])
+        return read_codex_labels(recs, load(CATEGORIES, []))
     out = {}
     for f in sorted(glob.glob(os.path.join(LABELS, "*.json"))):
         out.update({str(k): v for k, v in load(f, {}).items()})
@@ -69,7 +80,7 @@ def clear_library():
     for f in (os.path.join(DATA, "labels.json"), os.path.join(DATA, "dupes.json"), JEV_OUT, OVERRIDES):
         if os.path.exists(f):
             os.remove(f)
-    for d in (LABELS, os.path.join(WORK, "sheets")):
+    for d in (LABELS, CODEX_LABELS, os.path.join(WORK, "sheets")):
         shutil.rmtree(d, ignore_errors=True)
 
 
@@ -90,13 +101,22 @@ def stream(cmd):
     return p.wait()
 
 
-def start_job(step, phases, body):
-    if job["running"]:
-        raise RuntimeError("Something is already running. Wait for it to finish.")
-    now = time.time()
-    job.update(step=step, running=True, log=[f"$ {step}"], code=None, phase=None, phases=phases, done=0, total=0,
-               started=now, phase_started=now, timings={})
-    threading.Thread(target=body, daemon=True).start()
+def start_job(step, phases, body, labeler=None, request=None):
+    def run():
+        try:
+            code = body()
+        except Exception as error:
+            job["log"].append(str(error))
+            code = 1
+        job.update(running=False, code=code, phase="done" if code == 0 else job["phase"])
+
+    with job_lock:
+        if job["running"]:
+            raise RuntimeError("Something is already running. Wait for it to finish.")
+        now = time.time()
+        job.update(step=step, labeler=labeler, request=request or {}, running=True, log=[f"$ {step}"],
+                   code=None, phase=None, phases=phases, done=0, total=0, started=now, phase_started=now, timings={})
+        threading.Thread(target=run, daemon=True).start()
 
 
 def run_phase(name, cmd):
@@ -107,64 +127,76 @@ def run_phase(name, cmd):
 
 
 def sort_all(args):
-    source = (args.get("source") or "").strip().rstrip("/")
+    source = (args.get("source") or "").strip()
     dest = (args.get("dest") or "").strip()
     limit = int(args.get("limit") or 0)
-    labeler = args.get("labeler") or "claude"
+    labeler = args.get("labeler") or "codex"
+    if labeler not in LABELERS:
+        raise ValueError("Choose a labeler under Advanced.")
     if not source or not os.path.isdir(os.path.expanduser(source)):
         raise ValueError("Choose the folder with your photos first.")
+    source = os.path.abspath(os.path.expanduser(source))
+    dest = sort_destination(source, dest)
     if labeler == "claude" and not shutil.which("claude"):
-        raise ValueError("Claude Code is not installed, so it can't label the photos. Install it, or use Jev under Advanced.")
+        raise ValueError("Claude Code is not installed. Install it or choose Codex under Advanced.")
     if labeler == "jev" and not has_jev_key():
         raise ValueError("Add JEV_KEY=your-key to a .env file in this folder to use Jev.")
     src = load(os.path.join(DATA, "source.json"), {})
     have = os.path.exists(os.path.join(DATA, "inventory.json"))
-    need_scan = not have or src.get("source") != os.path.expanduser(source) or int(src.get("limit") or 0) != limit
+    need_scan = not have or src.get("source") != source or int(src.get("limit") or 0) != limit
     phases = (["scan"] if need_scan else []) + ["dupes", "label", "apply"]
 
     def body():
-        def fail(code):
-            job.update(running=False, code=code)
-        if need_scan:
-            clear_library()
-            if run_phase("scan", [os.path.join(SCRIPTS, "scan.py"), source] + (["--limit", str(limit)] if limit else [])):
-                return fail(1)
-        if run_phase("dupes", [os.path.join(SCRIPTS, "dupes.py")]):
-            return fail(1)
-        marker = os.path.join(LABELS, ".categories")
-        if load(marker) != categories_fingerprint():  # folders changed since the last labels
-            shutil.rmtree(LABELS, ignore_errors=True)
-            if os.path.exists(JEV_OUT):
-                os.remove(JEV_OUT)
-        os.makedirs(LABELS, exist_ok=True)
-        save(marker, categories_fingerprint())
-        script = "label_jev.py" if labeler == "jev" else "label_claude.py"
-        if run_phase("label", [os.path.join(SCRIPTS, script)]):
-            total = len(load(os.path.join(DATA, "inventory.json"), []))
-            if not total or len(live_labels()) < 0.95 * total:
-                return fail(1)
-            job["log"].append(f"A few files could not be labelled; they go to the catch-all folders.")
-        if run_phase("apply", [os.path.join(SCRIPTS, "apply.py"), dest]):
-            return fail(1)
-        job.update(running=False, code=0, phase="done")
-    start_job("sort", phases, body)
+        job["phase"] = phases[0]
+        # Hold the copy lock while changing the inventory and labels as well.
+        # apply.py takes the lock itself when the copy phase starts.
+        with apply_lock():
+            if labeler == "codex":
+                require_codex()
+            if need_scan:
+                clear_library()
+                if run_phase("scan", [os.path.join(SCRIPTS, "scan.py"), source] + (["--limit", str(limit)] if limit else [])):
+                    return 1
+            if run_phase("dupes", [os.path.join(SCRIPTS, "dupes.py")]):
+                return 1
+            if labeler != "codex":
+                marker = os.path.join(LABELS, ".categories")
+                fingerprint = categories_fingerprint()
+                if load(marker) != fingerprint:  # folders changed since the last labels
+                    shutil.rmtree(LABELS, ignore_errors=True)
+                    if os.path.exists(JEV_OUT):
+                        os.remove(JEV_OUT)
+                save(marker, fingerprint)
+            if run_phase("label", [os.path.join(SCRIPTS, LABELERS[labeler])]):
+                if labeler == "codex":
+                    return 1
+                total = len(load(os.path.join(DATA, "inventory.json"), []))
+                if not total or len(live_labels()) < 0.95 * total:
+                    return 1
+                job["log"].append("A few files could not be labelled; they go to the catch-all folders.")
+        apply_cmd = [os.path.join(SCRIPTS, "apply.py"), dest]
+        if labeler == "codex":
+            apply_cmd += ["--labeler", "codex"]
+        return run_phase("apply", apply_cmd)
+    start_job("sort", phases, body, labeler, {"source": source, "dest": dest, "limit": limit})
 
 
 def run_single(step, args):
     cmds = {
         "scan": ["scan.py", args.get("source", "")] + (["--limit", str(args["limit"])] if args.get("limit") else []),
         "dupes": ["dupes.py"], "estimate": ["label_jev.py", "--estimate"], "jev": ["label_jev.py"],
-        "claude": ["label_claude.py"], "apply": ["apply.py", args.get("dest", "")],
+        "codex": ["label_codex.py"], "claude": ["label_claude.py"], "apply": ["apply.py", args.get("dest", "")],
     }
+    if step == "apply" and args.get("labeler") == "codex":
+        cmds[step] += ["--labeler", "codex"]
     if step not in cmds:
         raise ValueError("unknown step")
 
     def body():
         if step == "scan":
             clear_library()
-        code = run_phase(step, [os.path.join(SCRIPTS, cmds[step][0])] + cmds[step][1:])
-        job.update(running=False, code=code, phase="done" if code == 0 else step)
-    start_job(step, [step], body)
+        return run_phase(step, [os.path.join(SCRIPTS, cmds[step][0])] + cmds[step][1:])
+    start_job(step, [step], body, labeler="codex" if step == "codex" else args.get("labeler"))
 
 
 def peek(source):
