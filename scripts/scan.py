@@ -32,6 +32,11 @@ if not os.path.isdir(src):
 
 HAS_FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
 MINI = os.path.join(DATA, "mini")  # 72px copies for the animation, so hundreds can move smoothly
+inventory_path = os.path.join(DATA, "inventory.json")
+try:
+    os.remove(inventory_path)
+except FileNotFoundError:
+    pass
 for d in (THUMBS, MINI):
     if os.path.isdir(d):
         shutil.rmtree(d)
@@ -71,12 +76,14 @@ def video_info(path, thumb):
     if not HAS_FFMPEG:
         return 0, 0, 0.0
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                        "stream=width,height:stream_tags=rotate:format=duration", "-of", "json", path],
+                        "stream=width,height:stream_tags=rotate:stream_side_data=rotation:format=duration", "-of", "json", path],
                        capture_output=True, text=True)
     j = json.loads(r.stdout or "{}")
     s = (j.get("streams") or [{}])[0]
     w, h = s.get("width", 0), s.get("height", 0)
-    if str(s.get("tags", {}).get("rotate", "0")) in ("90", "-90", "270"):
+    rotation = next((d["rotation"] for d in s.get("side_data_list", []) if "rotation" in d),
+                    s.get("tags", {}).get("rotate", 0))
+    if int(rotation) % 180 == 90:
         w, h = h, w
     dur = float(j.get("format", {}).get("duration", 0) or 0)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "1" if dur > 2 else "0", "-i", path, "-frames:v", "1",
@@ -98,7 +105,8 @@ def process(args):
                 Image.new("RGB", (256, 256), (60, 60, 66)).save(thumb)
         else:
             with Image.open(path) as im:
-                rec["w"], rec["h"] = im.size
+                w, h = im.size
+                rec["w"], rec["h"] = (h, w) if im.getexif().get(274, 1) in (5, 6, 7, 8) else (w, h)
                 im.draft("RGB", (512, 512))
                 square(ImageOps.exif_transpose(im)).save(thumb, quality=80)
         with Image.open(thumb) as t:
@@ -140,8 +148,8 @@ with ThreadPoolExecutor(8) as ex:
         if n % 200 == 0:
             print(f"  {n}/{len(files)}", flush=True)
 
-save(os.path.join(DATA, "inventory.json"), recs)
 save(os.path.join(DATA, "source.json"), {"source": src, "limit": args.limit})
+save(inventory_path, recs)
 bad = [r["name"] for r in recs if "error" in r]
 print(f"Done: {len(recs)} files ({sum(r['kind'] == 'video' for r in recs)} videos), "
       f"{sum(r['bytes'] for r in recs) / 1e9:.1f} GB" + (f", {len(bad)} unreadable: {bad[:5]}" if bad else ""))

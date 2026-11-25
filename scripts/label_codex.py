@@ -8,7 +8,7 @@ import tempfile
 import time
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 
-from common import DATA, categories, codex_cache, load, save, valid_labels
+from common import DATA, PROFILE_ENV, categories, codex_cache, load, save, valid_labels
 from sheets import FILES_PER_SHEET, write_sheet
 
 WORKERS = 2
@@ -64,6 +64,10 @@ def label_batch(codex, batch, cats, cache_path, number):
                 "For an unreadable or ambiguous preview, use the last folder listed for its kind. "
                 "Return one folder key for every file ID in the JSON schema.\n\n" + rules
             )
+            if os.environ.get(PROFILE_ENV, "standard") != "standard":
+                dimensions = "\n".join(f"- {r['id']}: {r['w']}×{r['h']}" for r in missing if r.get("w") and r.get("h"))
+                if dimensions:
+                    prompt += "\n\nOriginal display dimensions by ID (the previews are square crops):\n" + dimensions
             if os.path.exists(answer):
                 os.remove(answer)
             cmd = [codex, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",

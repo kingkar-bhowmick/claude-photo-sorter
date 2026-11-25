@@ -79,7 +79,7 @@ input, textarea, select { font: 13px var(--font); }
 .panel { position: absolute; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center; pointer-events: none; padding: 8px; }
 .panel > * { pointer-events: auto; }
 .panel.is-running { align-items: flex-end; }
-.setup { width: min(380px, 100%); max-height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 20px; border-radius: 18px; border: 1px solid var(--border);
+.setup { width: min(400px, 100%); max-height: 100%; overflow-y: auto; scrollbar-width: thin; padding: 20px; border-radius: 18px; border: 1px solid var(--border);
   background: var(--surface); box-shadow: var(--shadow-lift); }
 .q { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: start; }
 .q + .q, .q + .acts, .q + .typed { margin-top: 14px; }
@@ -107,31 +107,32 @@ input, textarea, select { font: 13px var(--font); }
 .linkish.recent { display: block; margin: 12px 0 0 32px; max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis; text-align: left; }
 .start { margin-top: 4px; }
 .start .meta { justify-content: center; margin-top: 8px; }
+.preset > label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
+.preset .meta, .fresh .meta { line-height: 1.4; }
+.preset .mx-btn { margin-top: 8px; }
+.fresh { margin: 12px 0; padding-top: 6px; border-top: 1px solid var(--hair); }
+.fresh .meta { margin-top: 2px; }
+.fresh [role="status"] { margin-top: 4px; color: var(--ink-2); }
 .adv-toggle { display: flex; align-items: center; gap: 4px; margin: 14px auto 0; border: 0; background: none; color: var(--ink-3); font-size: 12.5px; font-weight: 500; }
 .adv-toggle svg { transition: transform var(--dur-2); }
 .adv-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
 .adv { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--hair); }
 .adv h4 { margin: 12px 0 6px; font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
-.fchips { display: flex; flex-wrap: wrap; gap: 5px; }
-.fchip { display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 4px 0 10px; border-radius: 999px; border: 1px solid var(--chip-border); background: var(--paper); font-size: 12px; color: var(--ink-2); }
-.fchip button { width: 20px; height: 20px; border: 0; border-radius: 50%; background: none; color: var(--faint); display: grid; place-items: center; }
-.fchip button:hover { background: var(--hover); color: var(--ink); }
-.fchip button svg { width: 11px; height: 11px; }
-.fchip.add { padding: 0 3px; border-style: dashed; }
-.newf { display: flex; flex-wrap: wrap; gap: 5px; width: 100%; }
-.newf input { flex: 1 1 120px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--chip-border); background: var(--paper); color: var(--ink); font-size: 12px; min-width: 0; }
 .opt { display: flex; gap: 9px; align-items: flex-start; padding: 8px 10px; margin-bottom: 6px; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; }
 .opt.on { border-color: var(--accent); background: var(--accent-tint); }
 .opt input { margin-top: 2px; accent-color: var(--accent); }
 .opt b { display: flex; align-items: center; gap: 6px; font-size: 13px; }
 .opt small { display: block; color: var(--ink-3); font-size: 12px; margin-top: 2px; line-height: 1.4; }
 .check-row { display: inline-flex; gap: 6px; align-items: center; margin-top: 6px; color: var(--ink-3); font-size: 12.5px; }
+.check-row input { accent-color: var(--accent); }
 .paid { display: inline-block; padding: 1px 7px; border-radius: 999px; background: var(--brand-tint); color: var(--brand); font-size: 10.5px; font-weight: 700; }
 
 .run { width: min(400px, 100%); padding: 14px 16px; border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-lift); }
 .run-h { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .run-h b { font-size: 14px; }
 .run-h .num { color: var(--faint); font-size: 12px; white-space: nowrap; }
+.run .acts { margin-left: 0; }
+.run .meta { margin-top: 10px; line-height: 1.4; }
 .pbar { height: 6px; margin: 10px 0; border-radius: 999px; background: var(--track); overflow: hidden; }
 .pbar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .6s var(--ease); }
 .phases { display: flex; gap: 14px; margin: 0; padding: 0; list-style: none; color: var(--faint); font-size: 12px; }

@@ -6,24 +6,25 @@ build folders) with live progress, edit folders, browse photos at full size, mov
 photo to another folder, and open folders in Finder.
 Listens on 127.0.0.1 only: nothing is reachable from other computers.
 """
-import glob, hashlib, io, json, mimetypes, os, random, re, shutil, subprocess, sys, threading, time, urllib.parse
+import csv, glob, hashlib, io, json, mimetypes, os, random, re, shutil, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
 from apply import apply_lock
-from common import (CATEGORIES, CODEX_LABELS, DATA, IMG, JEV_OUT, LABELS, ROOT, VID, WORK,
-                    load, read_codex_labels, save, sort_destination)
-from label_codex import require_codex
+from common import (CODEX_LABELS, DATA, IMG, JEV_OUT, LABELS, PROFILE_ENV, PROFILES, ROOT, VID, WORK,
+                    categories, category_path, codex_cache, is_within, load, overrides_path, read_codex_labels,
+                    save, sort_destination, valid_labels)
 
 PORT = int(os.environ.get("PORT", 8765))
 DASH = os.path.join(ROOT, "dashboard")
 PEEK = os.path.join(DASH, "peek")
-OVERRIDES = os.path.join(WORK, "overrides.json")
 SCRIPTS = os.path.join(ROOT, "scripts")
 PY = sys.executable
 LABELERS = {"codex": "label_codex.py", "claude": "label_claude.py", "jev": "label_jev.py"}
 job_lock = threading.Lock()
-job = {"step": None, "labeler": None, "request": {}, "running": False, "log": [],
+active_process = stop_finished = None
+job = {"step": None, "labeler": None, "request": {}, "running": False, "stopping": False,
+       "cancelled": False, "fresh_pending": False, "log": [],
        "code": None, "phase": None, "phases": [], "done": 0, "total": 0,
        "started": None, "phase_started": None, "timings": {}}
 
@@ -35,28 +36,55 @@ def has_jev_key():
     return os.path.exists(env) and bool(re.search(r"^(JEV_KEY|TYPESAFE_API_KEY)=\S", open(env).read(), re.M))
 
 
+def has_sorted_copies(dest):
+    if not dest:
+        return False
+    manifest = os.path.join(dest, "sorted.csv")
+    if os.path.islink(manifest):
+        return False
+    try:
+        with open(manifest, newline="") as report:
+            for row in csv.DictReader(report):
+                if row.get("file"):
+                    path = os.path.join(dest, row["file"])
+                    if os.path.isfile(path) and is_within(dest, path):
+                        return True
+    except (OSError, ValueError, csv.Error):
+        pass
+    return False
+
+
 def state():
+    fields = ("step", "labeler", "request", "running", "stopping", "cancelled", "fresh_pending", "code",
+              "phase", "phases", "done", "total", "started", "phase_started", "timings")
+    with job_lock:
+        status = {k: job[k] for k in fields} | {"log": job["log"][-40:], "now": job.get("finished") or time.time()}
     inv = load(os.path.join(DATA, "inventory.json"), [])
     src = load(os.path.join(DATA, "source.json"), {})
+    profile = src.get("profile", "standard")
+    output = src.get("sorted")
+    applied = bool(output) and os.path.exists(os.path.join(DATA, "labels.json"))
+    missing = applied and not status["running"] and not has_sorted_copies(output)
     claude_files = glob.glob(os.path.join(LABELS, "*.json"))
+    profiles = {key: {"label": title, "categories": categories(key)} for key, title in PROFILES.items()}
     return {
-        "categories": load(CATEGORIES, []),
-        "source": src.get("source"), "limit": src.get("limit"), "sorted": src.get("sorted"),
+        "categories": profiles["standard"]["categories"], "profiles": profiles,
+        "result_categories": load(os.path.join(DATA, "categories.json")) if applied else None,
+        "source": src.get("source"), "limit": src.get("limit"), "sorted": output, "profile": profile,
+        "output_missing": missing,
         "files": len(inv), "bytes": sum(r["bytes"] for r in inv),
         "steps": {
             "scan": bool(inv),
             "dupes": os.path.exists(os.path.join(DATA, "dupes.json")),
             "label": bool(claude_files) or os.path.isdir(CODEX_LABELS) or os.path.exists(JEV_OUT),
             "jev_labels": os.path.exists(JEV_OUT),
-            "apply": bool(src.get("sorted")) and os.path.exists(os.path.join(DATA, "labels.json")),
+            "apply": applied and not missing,
         },
         "jev_key": has_jev_key(),
         "codex_cli": bool(shutil.which("codex")),
         "claude_cli": bool(shutil.which("claude")),
-        "overrides": len(load(OVERRIDES, {})),
-        "job": {k: job[k] for k in ("step", "labeler", "request", "running", "code", "phase", "phases", "done", "total",
-                                  "started", "phase_started", "timings")}
-               | {"log": job["log"][-40:], "now": time.time()},
+        "overrides": len(load(overrides_path(profile), {})),
+        "job": status,
         "platform": sys.platform,
     }
 
@@ -65,7 +93,8 @@ def live_labels():
     """Labels written so far, for the live animation."""
     if job["labeler"] == "codex":
         recs = load(os.path.join(DATA, "inventory.json"), [])
-        return read_codex_labels(recs, load(CATEGORIES, []))
+        profile = job["request"].get("profile", "standard")
+        return read_codex_labels(recs, categories(profile), profile)
     out = {}
     for f in sorted(glob.glob(os.path.join(LABELS, "*.json"))):
         out.update({str(k): v for k, v in load(f, {}).items()})
@@ -76,29 +105,77 @@ def live_labels():
 
 
 def clear_library():
-    """A new folder (or sample size) means the old labels no longer match."""
-    for f in (os.path.join(DATA, "labels.json"), os.path.join(DATA, "dupes.json"), JEV_OUT, OVERRIDES):
-        if os.path.exists(f):
+    """Invalidate the inventory before replacing previews so a stopped scan is retried."""
+    files = [os.path.join(DATA, name) for name in ("inventory.json", "labels.json", "dupes.json")]
+    files += [JEV_OUT] + [overrides_path(profile) for profile in PROFILES]
+    for f in files:
+        try:
             os.remove(f)
-    for d in (LABELS, CODEX_LABELS, os.path.join(WORK, "sheets")):
+        except FileNotFoundError:
+            pass
+    for d in (LABELS, os.path.join(WORK, "sheets")):
         shutil.rmtree(d, ignore_errors=True)
 
 
-def categories_fingerprint():
-    return hashlib.sha1(open(CATEGORIES, "rb").read()).hexdigest()[:12]
+def stop_process(process, finished):
+    try:
+        if os.name == "nt":
+            result = subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+            if result.returncode and process.poll() is None:
+                process.terminate()
+            return
+        os.killpg(process.pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.1)
+            os.killpg(process.pid, 0)
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    finally:
+        finished.set()
 
 
-def stream(cmd):
+def stop_job(started):
+    global stop_finished
+    with job_lock:
+        if not job["running"] or (started is not None and job["started"] != started) or job["stopping"]:
+            return
+        job["stopping"] = True
+        if active_process is not None:
+            stop_finished = threading.Event()
+            threading.Thread(target=stop_process, args=(active_process, stop_finished), daemon=True).start()
+
+
+def stream(cmd, profile):
     """Run one script, keep its output for the log, and read PROGRESS lines."""
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=ROOT)
-    for line in p.stdout:
-        line = line.rstrip()
-        m = re.match(r"PROGRESS (\d+) (\d+)", line)
-        if m:
-            job["done"], job["total"] = int(m.group(1)), int(m.group(2))
-        else:
-            job["log"].append(line)
-    return p.wait()
+    global active_process, stop_finished
+    with job_lock:
+        if job["stopping"]:
+            return 130
+        active_process = p = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", cwd=ROOT,
+            env={**os.environ, PROFILE_ENV: profile}, start_new_session=os.name != "nt",
+        )
+    try:
+        with p.stdout:
+            for line in p.stdout:
+                line = line.rstrip()
+                m = re.match(r"PROGRESS (\d+) (\d+)", line)
+                with job_lock:
+                    if m:
+                        job["done"], job["total"] = int(m.group(1)), int(m.group(2))
+                    else:
+                        job["log"].append(line)
+        return p.wait()
+    finally:
+        with job_lock:
+            finished = stop_finished
+            if finished is None:
+                active_process = None
+        if finished is not None:
+            finished.wait()
+            with job_lock:
+                active_process = stop_finished = None
 
 
 def start_job(step, phases, body, labeler=None, request=None):
@@ -108,21 +185,32 @@ def start_job(step, phases, body, labeler=None, request=None):
         except Exception as error:
             job["log"].append(str(error))
             code = 1
-        job.update(running=False, code=code, phase="done" if code == 0 else job["phase"])
+        with job_lock:
+            cancelled = job["stopping"] and code != 0
+            job.update(running=False, stopping=False, cancelled=cancelled, code=130 if cancelled else code,
+                       phase="done" if code == 0 else job["phase"], finished=time.time())
 
     with job_lock:
         if job["running"]:
             raise RuntimeError("Something is already running. Wait for it to finish.")
         now = time.time()
         job.update(step=step, labeler=labeler, request=request or {}, running=True, log=[f"$ {step}"],
-                   code=None, phase=None, phases=phases, done=0, total=0, started=now, phase_started=now, timings={})
+                   stopping=False, cancelled=False, fresh_pending=bool((request or {}).get("fresh")),
+                   code=None, phase=None, phases=phases, done=0, total=0, started=now, finished=None,
+                   phase_started=now, timings={})
         threading.Thread(target=run, daemon=True).start()
 
 
-def run_phase(name, cmd):
-    job.update(phase=name, done=0, total=0, phase_started=time.time())
-    code = stream([PY, "-u"] + cmd)
-    job["timings"][name] = round(time.time() - job["phase_started"], 1)
+def run_phase(name, cmd, profile="standard"):
+    with job_lock:
+        if job["stopping"]:
+            return 130
+        job.update(phase=name, done=0, total=0, phase_started=time.time())
+    code = stream([PY, "-u"] + cmd, profile)
+    with job_lock:
+        job["timings"][name] = round(time.time() - job["phase_started"], 1)
+        if job["stopping"] and name != "apply":
+            return 130
     return code
 
 
@@ -131,6 +219,10 @@ def sort_all(args):
     dest = (args.get("dest") or "").strip()
     limit = int(args.get("limit") or 0)
     labeler = args.get("labeler") or "codex"
+    profile = args.get("profile") or "standard"
+    fresh = args.get("fresh", False)
+    if profile not in PROFILES or type(fresh) is not bool:
+        raise ValueError("Choose a sorting preset and whether to start from scratch.")
     if labeler not in LABELERS:
         raise ValueError("Choose a labeler under Advanced.")
     if not source or not os.path.isdir(os.path.expanduser(source)):
@@ -143,45 +235,59 @@ def sort_all(args):
         raise ValueError("Add JEV_KEY=your-key to a .env file in this folder to use Jev.")
     src = load(os.path.join(DATA, "source.json"), {})
     have = os.path.exists(os.path.join(DATA, "inventory.json"))
-    need_scan = not have or src.get("source") != source or int(src.get("limit") or 0) != limit
+    need_scan = fresh or not have or src.get("source") != source or int(src.get("limit") or 0) != limit
     phases = (["scan"] if need_scan else []) + ["dupes", "label", "apply"]
 
+    def phase(name, script, *extra):
+        return run_phase(name, [os.path.join(SCRIPTS, script), *extra], profile)
+
     def body():
-        job["phase"] = phases[0]
         # Hold the copy lock while changing the inventory and labels as well.
         # apply.py takes the lock itself when the copy phase starts.
         with apply_lock():
-            if labeler == "codex":
-                require_codex()
+            if job["stopping"]:
+                return 130
             if need_scan:
                 clear_library()
-                if run_phase("scan", [os.path.join(SCRIPTS, "scan.py"), source] + (["--limit", str(limit)] if limit else [])):
+                if phase("scan", "scan.py", source, *(["--limit", str(limit)] if limit else [])):
                     return 1
-            if run_phase("dupes", [os.path.join(SCRIPTS, "dupes.py")]):
+            if fresh:
+                recs = load(os.path.join(DATA, "inventory.json"), [])
+                cache = codex_cache(recs, categories(profile), profile)
+                if labeler == "codex" and os.path.isdir(cache):
+                    shutil.rmtree(cache)
+                job["fresh_pending"] = False
+            if phase("dupes", "dupes.py"):
                 return 1
             if labeler != "codex":
                 marker = os.path.join(LABELS, ".categories")
-                fingerprint = categories_fingerprint()
+                if profile == "standard":
+                    with open(category_path(profile), "rb") as f:
+                        inputs = f.read()
+                else:
+                    inputs = json.dumps([profile, categories(profile)]).encode()
+                fingerprint = hashlib.sha1(inputs).hexdigest()[:12]
                 if load(marker) != fingerprint:  # folders changed since the last labels
                     shutil.rmtree(LABELS, ignore_errors=True)
                     if os.path.exists(JEV_OUT):
                         os.remove(JEV_OUT)
                 save(marker, fingerprint)
-            if run_phase("label", [os.path.join(SCRIPTS, LABELERS[labeler])]):
-                if labeler == "codex":
+            if phase("label", LABELERS[labeler]):
+                if labeler == "codex" or job["stopping"]:
                     return 1
                 total = len(load(os.path.join(DATA, "inventory.json"), []))
                 if not total or len(live_labels()) < 0.95 * total:
                     return 1
                 job["log"].append("A few files could not be labelled; they go to the catch-all folders.")
-        apply_cmd = [os.path.join(SCRIPTS, "apply.py"), dest]
-        if labeler == "codex":
-            apply_cmd += ["--labeler", "codex"]
-        return run_phase("apply", apply_cmd)
-    start_job("sort", phases, body, labeler, {"source": source, "dest": dest, "limit": limit})
+        return phase("apply", "apply.py", dest, *(["--labeler", "codex"] if labeler == "codex" else []))
+    start_job("sort", phases, body, labeler, {"source": source, "dest": dest, "limit": limit,
+                                           "profile": profile, "fresh": fresh})
 
 
 def run_single(step, args):
+    profile = args.get("profile") or "standard"
+    if profile not in PROFILES:
+        raise ValueError("Choose a sorting preset.")
     cmds = {
         "scan": ["scan.py", args.get("source", "")] + (["--limit", str(args["limit"])] if args.get("limit") else []),
         "dupes": ["dupes.py"], "estimate": ["label_jev.py", "--estimate"], "jev": ["label_jev.py"],
@@ -193,10 +299,60 @@ def run_single(step, args):
         raise ValueError("unknown step")
 
     def body():
+        cmd = [os.path.join(SCRIPTS, cmds[step][0])] + cmds[step][1:]
         if step == "scan":
-            clear_library()
-        return run_phase(step, [os.path.join(SCRIPTS, cmds[step][0])] + cmds[step][1:])
-    start_job(step, [step], body, labeler="codex" if step == "codex" else args.get("labeler"))
+            with apply_lock():
+                if job["stopping"]:
+                    return 130
+                clear_library()
+                return run_phase(step, cmd, profile)
+        return run_phase(step, cmd, profile)
+    start_job(step, [step], body, labeler="codex" if step == "codex" else args.get("labeler"),
+              request={"profile": profile})
+
+
+def save_categories(profile, cats):
+    path = category_path(profile)
+    keys = set()
+    for c in cats:
+        key = c.get("key", "")
+        label = c.get("label", "").strip()
+        folder = label.replace("/", "-").replace("&", "and")
+        if not key or key in keys or key == "_dupes" or c.get("kind") not in ("photo", "video"):
+            raise ValueError("Each label needs a unique key and a media type.")
+        if not folder or folder in (".", "..", "_Review") or re.search(r"[\\:\x00]", folder):
+            raise ValueError("Choose a valid name for each folder.")
+        keys.add(key)
+        c["label"] = label
+        c["rule"] = c.get("rule", "").strip() or label
+    if {c["kind"] for c in cats} != {"photo", "video"}:
+        raise ValueError("Keep at least one photo folder and one video folder.")
+    with job_lock:
+        if job["running"]:
+            raise ValueError("Stop the current sort before editing labels.")
+        with apply_lock():
+            save(path, cats)
+
+
+def move_label(item_id, key):
+    with job_lock:
+        if job["running"]:
+            raise ValueError("Stop the current sort before moving files between labels.")
+        src = load(os.path.join(DATA, "source.json"), {})
+        profile = src.get("profile", "standard")
+        cats = load(os.path.join(DATA, "categories.json")) or categories(profile)
+        recs = load(os.path.join(DATA, "inventory.json"), [])
+        item = next((r for r in recs if str(r["id"]) == item_id), None)
+        if item is None or not valid_labels([item], cats, {item_id: key}):
+            raise ValueError("Choose a label for this file's media type.")
+        with apply_lock():
+            path = overrides_path(profile)
+            ov = load(path, {})
+            ov[item_id] = key
+            save(path, ov)
+            labels = load(os.path.join(DATA, "labels.json"), {})
+            labels[item_id] = key
+            save(os.path.join(DATA, "labels.json"), labels)
 
 
 def peek(source):
@@ -363,26 +519,16 @@ class H(SimpleHTTPRequestHandler):
         try:
             if p == "/api/sort":
                 sort_all(body)
+            elif p == "/api/stop":
+                stop_job(body.get("started"))
             elif p == "/api/run":
                 run_single(body.get("step"), body)
             elif p == "/api/peek":
                 return self.send_json(peek(body.get("source", "")))
             elif p == "/api/categories":
-                cats = body["categories"]
-                keys = [c["key"] for c in cats]
-                if len(keys) != len(set(keys)) or not all(c.get("label") and c.get("kind") in ("photo", "video") for c in cats):
-                    raise ValueError("Every folder needs a name.")
-                if not any(c["kind"] == "photo" for c in cats) or not any(c["kind"] == "video" for c in cats):
-                    raise ValueError("Keep at least one photo folder and one video folder.")
-                save(CATEGORIES, cats)
-                save(os.path.join(DATA, "categories.json"), cats)
+                save_categories(body.get("profile") or "standard", body["categories"])
             elif p == "/api/move":
-                ov = load(OVERRIDES, {})
-                ov[str(body["id"])] = body["key"]
-                save(OVERRIDES, ov)
-                labels = load(os.path.join(DATA, "labels.json"), {})
-                labels[str(body["id"])] = body["key"]
-                save(os.path.join(DATA, "labels.json"), labels)
+                move_label(str(body["id"]), body["key"])
             elif p == "/api/open":
                 src = load(os.path.join(DATA, "source.json"), {})
                 if body.get("id") is not None:
@@ -403,7 +549,19 @@ class H(SimpleHTTPRequestHandler):
         return self.send_json(state())
 
 
+def interrupted(_signal, _frame):
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
     os.makedirs(DATA, exist_ok=True)
+    signal.signal(signal.SIGTERM, interrupted)
     print(f"Photo sorter running at http://127.0.0.1:{PORT}  (Ctrl+C to stop)", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    with ThreadingHTTPServer(("127.0.0.1", PORT), H) as server:
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            stop_job(None)
+            deadline = time.monotonic() + 3
+            while job["running"] and time.monotonic() < deadline:
+                time.sleep(0.05)

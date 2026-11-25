@@ -9,15 +9,14 @@ import errno
 import glob
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
 
-from common import (CATEGORIES, DATA, JEV_OUT, LABELS, WORK, categories, is_within, load,
-                    read_codex_labels, save, sort_destination)
-
-OVERRIDES = os.path.join(WORK, "overrides.json")
+from common import (DATA, JEV_OUT, LABELS, PROFILE_ENV, WORK, categories, is_within, load,
+                    overrides_path, read_codex_labels, save, sort_destination)
 
 
 @contextmanager
@@ -124,7 +123,8 @@ def main():
         raise RuntimeError("Scan a folder before building the sorted copies.")
     cats = {c["key"]: c for c in categories()}
     labels, fixed, missing = choose_labels(recs, cats, args.labeler)
-    for k, v in load(OVERRIDES, {}).items():
+    profile = os.environ.get(PROFILE_ENV, "standard")
+    for k, v in load(overrides_path(profile), {}).items():
         if k in labels and v in cats:
             labels[k] = v
 
@@ -178,9 +178,10 @@ def main():
                 print(f"  copied {n}/{len(recs)}", flush=True)
     os.replace(dupes_pending, os.path.join(dest, "duplicates.csv"))
     os.replace(sorted_pending, sorted_csv)
-    shutil.copy(CATEGORIES, os.path.join(DATA, "categories.json"))
+    save(os.path.join(DATA, "categories.json"), list(cats.values()))
     save(os.path.join(DATA, "labels.json"), labels)
     source_info["sorted"] = dest
+    source_info["profile"] = profile
     save(source_file, source_info)
 
     counts = {}
@@ -196,7 +197,12 @@ def main():
         print(f"  ({missing} missing labels and {fixed} wrong-type labels went to the catch-all folders)")
 
 
+def interrupted(_signal, _frame):
+    raise SystemExit(130)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         with apply_lock():
             main()

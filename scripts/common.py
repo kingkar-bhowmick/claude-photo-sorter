@@ -17,16 +17,19 @@ LABELS = os.path.join(WORK, "labels")      # Claude and manual labels
 CODEX_LABELS = os.path.join(WORK, "codex")
 JEV_OUT = os.path.join(WORK, "jev.json")   # Jev labels (optional)
 CATEGORIES = os.path.join(ROOT, "categories.json")
+PROFILES = {"standard": "Camera Roll", "reels": "Instagram Reels", "cinematic": "Cinematic Editing"}
+PROFILE_ENV = "PHOTO_SORTER_PROFILE"
 
 IMG = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
 VID = {".mov", ".mp4", ".m4v", ".3gp", ".avi", ".mkv", ".webm"}
 
 
 def load(path, default=None):
-    if not os.path.exists(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
         return default
-    with open(path) as f:
-        return json.load(f)
 
 
 def save(path, obj):
@@ -43,15 +46,19 @@ def save(path, obj):
             os.remove(temp)
 
 
-def codex_cache(recs, cats):
+def codex_cache(recs, cats, profile=None):
     files = [(r["id"], r["path"], r["sha256"]) for r in recs]
-    fingerprint = hashlib.sha256(json.dumps([files, cats], sort_keys=True).encode()).hexdigest()
+    profile = profile or os.environ.get(PROFILE_ENV, "standard")
+    inputs = [files, cats]
+    if profile != "standard":
+        inputs.append(profile)
+    fingerprint = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
     return os.path.join(CODEX_LABELS, fingerprint)
 
 
-def read_codex_labels(recs, cats):
+def read_codex_labels(recs, cats, profile=None):
     labels = {}
-    for path in glob.glob(os.path.join(codex_cache(recs, cats), "*.json")):
+    for path in glob.glob(os.path.join(codex_cache(recs, cats, profile), "*.json")):
         labels.update(load(path, {}))
     return valid_labels(recs, cats, labels)
 
@@ -85,8 +92,24 @@ def is_within(folder, path):
         return False
 
 
-def categories():
-    cats = load(CATEGORIES)
+def category_path(profile):
+    if profile not in PROFILES:
+        raise ValueError("Choose a sorting preset.")
+    if profile == "standard":
+        return CATEGORIES
+    return os.path.join(WORK, f"categories-{profile}.json")
+
+
+def overrides_path(profile):
+    name = "overrides.json" if profile == "standard" else f"overrides-{profile}.json"
+    return os.path.join(WORK, name)
+
+
+def categories(profile=None):
+    profile = profile or os.environ.get(PROFILE_ENV, "standard")
+    cats = load(category_path(profile))
+    if cats is None:
+        cats = load(os.path.join(ROOT, "presets.json"))[profile]
     keys = [c["key"] for c in cats]
     assert len(keys) == len(set(keys)), "categories.json has duplicate keys"
     for kind in ("photo", "video"):

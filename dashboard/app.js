@@ -28,6 +28,7 @@ const el = (tag, attrs = {}, ...kids) => {
 const ICONS = {
   images: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
   play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   pencil: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>',
   folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -62,8 +63,15 @@ $("theme").onclick = () => setTheme(document.documentElement.dataset.theme === "
 let S = {};                                 // server state
 let mode = "loading";                       // setup | running | done
 let cats = [], catBy = {}, items = [], byId = {}, dupeIds = new Set(), labels = {};
-const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "codex", sample: false, typing: null };
+const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "codex",
+  sample: false, typing: null, profile: "standard", fresh: false };
 const LABELER_NAMES = { codex: "Codex", claude: "Claude", jev: "Jev" };
+const PROFILES = {
+  standard: "Sort by subject, such as travel, food, people, and screenshots.",
+  reels: "Group footage and photos for Reels, including hooks, vertical B-roll, and covers.",
+  cinematic: "Group footage and photos for an edit, including establishing shots, details, and reference stills.",
+};
+const pickedCategories = () => S.profiles?.[pick.profile]?.categories || S.categories || [];
 let tiles = [], run = "idle", order = [], released = 0, landed = 0, t0 = 0;
 const queue = [], flown = new Set();
 const stats = { photos: 0, videos: 0, dupes: 0, saved: 0 };
@@ -109,8 +117,14 @@ function setHeader() {
   $("total").hidden = !items.length || mode === "setup";
   $("total").textContent = fmt(items.length);
   $("btnOpen").hidden = !(mode === "done" && S.sorted);
-  $("btnNew").hidden = mode !== "done";
-  $("go").querySelector("span").textContent = mode === "done" ? "Replay sort" : `Sort with ${LABELER_NAMES[S.job?.running ? S.job.labeler : pick.labeler] || "Codex"}`;
+  $("btnNew").hidden = mode !== "done" && !(mode === "running" && !S.job?.running && S.job?.code);
+  $("btnFolders").disabled = mode === "running";
+  const go = $("go"), active = mode === "running";
+  go.hidden = active && !S.job?.running && Boolean(S.job?.code);
+  go.disabled = active && (!S.job?.running || S.job.stopping || stoppingRequest);
+  go.firstElementChild.innerHTML = svg(active ? "stop" : "play");
+  go.querySelector("span").textContent = active ? (S.job?.stopping || stoppingRequest ? "Stopping…" : S.job?.running ? "Stop sorting" : "Finishing…")
+    : mode === "done" ? "Replay sort" : `Sort with ${LABELER_NAMES[pick.labeler] || "Codex"}`;
   $("k-checked-s").textContent = items.length && mode !== "setup" ? size(items.reduce((s, r) => s + r.bytes, 0)) + " in total" : "photos & videos";
   document.body.dataset.mode = mode;
 }
@@ -219,7 +233,8 @@ function fillStatic() {  // results without animation
 }
 function showDone(celebrateNow) {
   document.body.classList.add("is-done");
-  $("bigF").textContent = `${cats.length} folders`;
+  const folders = cats.filter(c => c.landed?.length).length;
+  $("bigF").textContent = `${folders} ${folders === 1 ? "folder" : "folders"}`;
   $("chipD").textContent = `🗂️ ${fmt(stats.dupes)} duplicates`;
   $("chipS").textContent = `💾 ${size(stats.saved)} freed`;
   if (celebrateNow) { countUp($("bigN"), items.length, 900); confetti(); } else $("bigN").textContent = fmt(items.length);
@@ -358,7 +373,8 @@ function setupCard() {
     if (mac && pick.typing !== "source") box.append(el("div", { class: "acts" },
       el("button", { class: "mx-btn solid big-btn", onclick: () => pickFolder("source") }, icon("folder"), "Choose folder"), typeLink("source")));
     else box.append(pathBox("source", "/Users/you/Pictures/Camera roll"));
-    if (S.source && S.source !== pick.source) box.append(el("button", { class: "linkish recent", onclick: () => choose("source", S.source) }, `Last time: ${tilde(S.source)}`));
+    if (S.source) box.append(el("button", { class: "linkish recent", onclick: useLastFolders },
+      S.sorted ? "Use last source and destination" : `Use ${tilde(S.source)} again`));
     return box;
   }
   const pk = pick.peek;
@@ -384,10 +400,26 @@ function setupCard() {
     el("h3", {}, "Sorted copies go to"), el("div", { class: "picked", title: pick.dest }, icon("folder"), el("span", {}, tilde(pick.dest)))),
     el("button", { class: "linkish", onclick: () => { pick.dest = null; pick.typing = null; renderPanel(); } }, "Change")));
 
-  // 3. start
+  // 3. how to sort
   const files = pk ? (pick.sample ? Math.min(200, pk.photos + pk.videos) : pk.photos + pk.videos) : 0;
   const bytes = pk ? pk.bytes * (files / Math.max(1, pk.photos + pk.videos)) : 0;
   const est = phaseEstimates(files, bytes, true, pick.labeler), total = Object.values(est).reduce((a, b) => a + b, 0);
+  if (S.profiles) box.append(el("div", { class: "preset" },
+    el("label", { for: "sort-preset" }, "Sorting preset"),
+    el("select", { class: "field", id: "sort-preset", onchange: e => {
+      pick.profile = e.target.value; setCats(pickedCategories()); buildCards(); renderPanel();
+      $("sort-preset").focus();
+    } }, Object.entries(S.profiles).map(([key, profile]) =>
+      el("option", { value: key, selected: key === pick.profile }, profile.label))),
+    el("p", { class: "meta" }, PROFILES[pick.profile]),
+    el("button", { class: "mx-btn small", onclick: openFolders }, icon("pencil"), "Add or edit labels")));
+  const missing = S.output_missing && S.sorted === pick.dest;
+  box.append(el("div", { class: "fresh" },
+    missing ? el("p", { class: "meta", role: "status" }, "The previous sorted copies are missing from this destination.") : null,
+    el("label", { class: "check-row" },
+      el("input", { type: "checkbox", checked: pick.fresh, "aria-describedby": "fresh-help",
+        onchange: e => { pick.fresh = e.target.checked; $("fresh-help").textContent = freshHelp(); } }), "Sort from scratch"),
+    el("p", { class: "meta", id: "fresh-help" }, freshHelp())));
   box.append(el("div", { class: "start" },
     el("button", { class: "mx-btn solid big-btn wide", onclick: startSorting }, icon("play"), "Start sorting"),
     el("p", { class: "meta" }, icon("clock"), pk ? ` Estimated ${roughly(total)} for ${fmt(files)} files` : " Counting files…"),
@@ -400,35 +432,15 @@ function setupCard() {
   return box;
 }
 
+function freshHelp() {
+  return pick.fresh ? "Scan the source again and generate new labels for this preset." : "Reuse the saved scan and matching labels when available.";
+}
+
 function advancedBox(files) {
-  const chips = kind => cats.filter(c => c.kind === kind).map(c => el("span", { class: "fchip" }, `${c.emoji || "📁"} ${c.label}`,
-    el("button", { "aria-label": `Remove ${c.label}`, onclick: () => saveCats(cats.filter(x => x !== c)) }, icon("x"))));
-  const adder = kind => {
-    const box = el("span", { class: "fchip add" });
-    box.append(el("button", { "aria-label": `Add a ${kind} folder`, onclick: () => {
-      const name = el("input", { placeholder: "Folder name", "aria-label": "Folder name" });
-      const rule = el("input", { placeholder: "What goes in it", "aria-label": "What goes in it" });
-      const add = () => {
-        const label = name.value.trim(); if (!label) return name.focus();
-        let key = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "folder", i = 2;
-        while (catBy[key]) key = key.replace(/-\d+$/, "") + "-" + i++;
-        const at = cats.map(c => c.kind).lastIndexOf(kind);  // keep the catch-all folder last
-        const next = cats.slice(); next.splice(Math.max(0, at), 0, { key, kind, label, emoji: kind === "photo" ? "📁" : "🎬", rule: rule.value.trim() || label });
-        saveCats(next);
-      };
-      [name, rule].forEach(i => i.onkeydown = e => { if (e.key === "Enter") add(); if (e.key === "Escape") renderPanel(); });
-      box.replaceWith(el("span", { class: "newf" }, name, rule, el("button", { class: "mx-btn small solid", onclick: add }, "Add")));
-      name.focus();
-    } }, icon("plus")));
-    return box;
-  };
   const lab = (k, title, text, extra) => el("label", { class: "opt" + (pick.labeler === k ? " on" : "") },
     el("input", { type: "radio", name: "labeler", checked: pick.labeler === k, onchange: () => { pick.labeler = k; setHeader(); renderPanel(); } }),
     el("span", {}, el("b", {}, title, extra || ""), el("small", {}, text)));
   return el("div", { class: "adv" },
-    el("h4", {}, "Photo folders"), el("div", { class: "fchips" }, chips("photo"), adder("photo")),
-    el("h4", {}, "Video folders"), el("div", { class: "fchips" }, chips("video"), adder("video")),
-    el("p", { class: "meta" }, "The last folder of each kind catches everything that fits nowhere else."),
     el("h4", {}, "Who looks at the photos"),
     lab("codex", "Codex", "Uses your ChatGPT sign-in and Codex allowance."),
     lab("claude", "Claude", "Uses your Claude plan. No key needed."),
@@ -437,10 +449,11 @@ function advancedBox(files) {
     el("label", { class: "check-row" }, el("input", { type: "checkbox", checked: pick.sample, onchange: e => { pick.sample = e.target.checked; renderPanel(); } }), "Try 200 random files first"));
 }
 
-async function saveCats(next) {
-  try { S = await api("/api/categories", { categories: next.map(({ key, kind, label, emoji, rule }) => ({ key, kind, label, emoji, rule })) }); }
-  catch (e) { return; }
-  setCats(S.categories); buildCards(); renderPanel();
+async function saveCats(profile, next) {
+  try { S = await api("/api/categories", { profile, categories: next.map(({ key, kind, label, emoji, rule }) => ({ key, kind, label, emoji, rule })) }); }
+  catch (e) { return false; }
+  if (mode === "setup") { setCats(pickedCategories()); buildCards(); renderPanel(); }
+  return true;
 }
 
 async function pickFolder(key) {
@@ -459,8 +472,19 @@ async function choose(key, path) {
     catch (e) { pick.source = null; renderPanel(); return; }
     if (!pick.peek.photos && !pick.peek.videos) { toast("No photos or videos in that folder."); pick.source = null; }
     else buildSphere(pick.peek.previews.map(u => () => el("img", { src: u, alt: "" })));
+  } else {
+    try { S = await api("/api/state"); } catch (e) {}
   }
   renderPanel(); setHeader();
+}
+
+async function useLastFolders() {
+  const { source, sorted, limit, profile } = S;
+  pick.profile = profile || "standard";
+  pick.sample = Boolean(limit);
+  setCats(pickedCategories()); buildCards();
+  await choose("source", source);
+  if (pick.source && sorted) await choose("dest", sorted);
 }
 
 function resetStageForSetup() {
@@ -473,7 +497,7 @@ function resetStageForSetup() {
 
 /* Top-bar button: asks for whatever is missing, then starts. After sorting it replays. */
 function sortOrReplay() {
-  if (mode === "running") return;
+  if (mode === "running") return stopSorting();
   if (mode === "done") return replay();
   if (!pick.source) return S.platform === "darwin" ? pickFolder("source") : (pick.typing = "source", renderPanel());
   if (!pick.dest) return S.platform === "darwin" ? pickFolder("dest") : (pick.typing = "dest", renderPanel());
@@ -481,7 +505,7 @@ function sortOrReplay() {
 }
 
 let starting = false;
-async function startSorting() {
+async function startSorting(retry = false) {
   if (!pick.source || !pick.dest) return sortOrReplay();
   if (starting) return;
   const files = pick.peek ? pick.peek.photos + pick.peek.videos : 0;
@@ -494,7 +518,9 @@ async function startSorting() {
     if (pick.labeler === "codex" && S.codex_cli === undefined) return toast("Restart the photo sorter to enable Codex.");
     if (pick.labeler === "codex" && !S.codex_cli) return toast("Install the Codex CLI, then reopen the photo sorter.");
     if (pick.labeler === "claude" && S.claude_cli === false) return toast("Install Claude Code or choose Codex under Advanced.");
-    S = await api("/api/sort", { source: pick.source, dest: pick.dest, labeler: pick.labeler, limit: pick.sample ? 200 : 0 });
+    S = await api("/api/sort", { source: pick.source, dest: pick.dest, labeler: pick.labeler, limit: pick.sample ? 200 : 0,
+      profile: pick.profile, fresh: retry === true ? Boolean(S.job?.fresh_pending) : pick.fresh });
+    pick.fresh = false;
     runInfo = { files: pick.sample ? Math.min(200, files) : files, bytes: pick.peek ? pick.peek.bytes * (pick.sample ? Math.min(1, 200 / Math.max(1, files)) : 1) : 0 };
     beginRunning();
   } catch (e) { return; } finally { starting = false; }
@@ -502,6 +528,17 @@ async function startSorting() {
 
 /* ---------- running: poll the server and animate as labels arrive ---------- */
 let monitor, polling = false, lastLabelsAt = 0, libraryLoaded = false, dupesMarked = false, finishing = false;
+let stoppingRequest = false;
+async function stopSorting() {
+  if (stoppingRequest || S.job?.stopping || !S.job?.running) return;
+  stoppingRequest = true;
+  setHeader(); renderPanel();
+  try { await api("/api/stop", { started: S.job.started }); }
+  catch (e) {}
+  finally { stoppingRequest = false; }
+  await pollRun();
+}
+
 function beginRunning() {
   mode = "running"; run = "live"; libraryLoaded = false; dupesMarked = false; finishing = false;
   queue.length = 0;
@@ -523,7 +560,15 @@ async function refreshRun() {
   S = s;
   const j = S.job;
   if (!runInfo.files) runInfo = { files: S.files || 0, bytes: S.bytes || 0 };
-  setPill("busy", phaseName(j) || "Working");
+  if (!j.running && j.code !== 0) {
+    clearInterval(monitor);
+    run = "idle";
+    queue.length = 0;
+    setPill(null, j.cancelled ? "Stopped" : "Sorting interrupted");
+    setHeader(); renderPanel();
+    return;
+  }
+  setPill("busy", j.stopping || stoppingRequest ? "Stopping…" : phaseName(j) || "Working");
   // after the scan, swap the preview sphere for the real library
   if (!libraryLoaded && j.phase && j.phase !== "scan") {
     libraryLoaded = true;
@@ -545,10 +590,9 @@ async function refreshRun() {
       if (it && !flown.has(it.id) && !queue.includes(it)) { it.cat = key; queue.push(it); }
     }
   }
-  renderPanel();
+  setHeader(); renderPanel();
   if (!j.running) {
     clearInterval(monitor);
-    if (j.code !== 0) { setPill(null, "Stopped"); toast("Sorting stopped. See the details in the panel."); return; }
     // final labels (with any hand moves), then let the rest fly in
     const final = await getJSON("labels.json") || {};
     items.forEach(it => { if (final[it.id]) it.cat = final[it.id]; if (!flown.has(it.id) && !queue.includes(it)) queue.push(it); });
@@ -566,21 +610,29 @@ function runCard() {
   });
   const pct = j.total ? Math.round(j.done / j.total * 100) : 0;
   return el("div", { class: "run" },
-    el("div", { class: "run-h" }, el("b", {}, failed ? "Sorting stopped" : phaseName(j) || "Getting ready"),
+    el("div", { class: "run-h" }, el("b", {}, failed ? (j.cancelled ? "Sorting stopped" : "Sorting interrupted")
+      : j.stopping || stoppingRequest ? "Stopping…" : j.phase === "done" ? "Copies are ready" : phaseName(j) || "Getting ready"),
       el("span", { class: "num", id: "timer" }, "")),
-    el("div", { class: "pbar" }, el("i", { style: `width:${failed ? 100 : pct}%` })),
+    el("div", { class: "pbar" }, el("i", { style: `width:${pct}%` })),
     el("ol", { class: "phases" }, steps),
-    failed ? el("pre", { class: "log" }, (j.log || []).slice(-8).join("\n")) : null,
+    j.cancelled ? el("p", { class: "meta" }, "Resume to reuse saved labels. An interrupted scan or copy step will run again.")
+      : failed ? el("pre", { class: "log" }, (j.log || []).slice(-8).join("\n")) : null,
     failed ? el("div", { class: "acts" },
-      el("button", { class: "mx-btn small solid", onclick: startSorting }, "Try again"),
-      el("button", { class: "mx-btn small", onclick: () => { const source = pick.source; newSort(); if (source) choose("source", source); } }, "Change folders")) : null);
+      el("button", { class: "mx-btn small solid", onclick: () => startSorting(true) }, j.cancelled ? "Resume sorting" : "Try again"),
+      el("button", { class: "mx-btn small", onclick: async () => {
+        const { source, dest } = pick; newSort();
+        if (source) await choose("source", source);
+        if (dest && pick.source) await choose("dest", dest);
+      } }, "Change sort settings")) : null);
 }
 function paintTimer() {
   const t = $("timer"); if (!t || !S.job || !S.job.started) return;
   const now = Date.now() / 1000;
   const elapsed = S.job.running ? now - S.job.started : S.job.now - S.job.started;
   const left = S.job.running ? remaining() - (now - S.job.now) : 0;
-  t.textContent = `${mmss(Math.max(0, elapsed))} · ${S.job.running ? (left > 5 ? roughly(left) + " left" : "almost done") : S.job.code ? "stopped" : "done"}`;
+  const status = S.job.stopping || stoppingRequest ? "stopping"
+    : S.job.running ? (left > 5 ? roughly(left) + " left" : "almost done") : S.job.code ? "stopped" : "done";
+  t.textContent = `${mmss(Math.max(0, elapsed))} · ${status}`;
 }
 
 /* ---------- dialogs: edit folders, browse a folder, view a photo, paid confirm ---------- */
@@ -603,12 +655,13 @@ function confirmPaid(n) {
 }
 
 function openFolders() {
-  const draft = cats.map(c => ({ ...c }));
+  const profile = pick.profile;
+  const draft = (DEMO ? cats : pickedCategories()).map(({ key, kind, label, emoji, rule }) => ({ key, kind, label, emoji, rule }));
   const list = el("div", { class: "folder-list" });
   const slug = s => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "folder";
   function row(c) {
     const seg = el("div", { class: "mx-seg" }, ["photo", "video"].map(k => el("button", { "aria-pressed": c.kind === k, onclick: () => { c.kind = k; render(); } }, k === "photo" ? "Photos" : "Videos")));
-    return el("div", { class: "folder-row" },
+    return el("div", { class: "folder-row", "data-kind": c.kind },
       el("input", { class: "emoji", value: c.emoji || "📁", "aria-label": "Emoji", oninput: e => c.emoji = e.target.value }),
       el("input", { value: c.label, placeholder: "Folder name", "aria-label": "Folder name", oninput: e => c.label = e.target.value }),
       el("input", { class: "rule", value: c.rule || "", placeholder: "What goes in here, in plain words", "aria-label": "Rule", oninput: e => c.rule = e.target.value }),
@@ -620,29 +673,35 @@ function openFolders() {
       el("h4", {}, "Video folders"), ...draft.filter(c => c.kind === "video").map(row));
     paintIcons(list);
   }
-  const add = kind => () => { draft.push({ key: "", kind, label: "", emoji: kind === "photo" ? "📁" : "🎬", rule: "" }); render(); };
+  const add = kind => () => {
+    const at = draft.map(c => c.kind).lastIndexOf(kind);
+    draft.splice(at < 0 ? draft.length : at, 0, { key: "", kind, label: "", emoji: kind === "photo" ? "📁" : "🎬", rule: "" });
+    render();
+    list.querySelector(`[data-kind="${kind}"] input[placeholder="Folder name"][value=""]`)?.focus();
+  };
   async function saveIt() {
     for (const c of draft) {
       if (!c.label.trim()) return toast("Every folder needs a name.");
       c.label = c.label.trim(); c.rule = (c.rule || "").trim() || c.label;
       if (!c.key) { let k = slug(c.label), i = 2; while (draft.some(d => d !== c && d.key === k)) k = slug(c.label) + "-" + i++; c.key = k; }
     }
-    await saveCats(draft);
+    if (!await saveCats(profile, draft)) return;
     closeAll();
     if (mode === "done") toast("Saved. Press New sort and sort again so files can use the new folders.");
   }
   render();
   overlay(el("div", { class: "fb-scrim", onclick: e => e.target === e.currentTarget && closeAll() },
     el("div", { class: "fb-dialog", role: "dialog", "aria-label": "Edit folders" },
-      el("div", { class: "fb-head" }, el("h2", {}, "Folders"), el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x"))),
+      el("div", { class: "fb-head" }, el("h2", {}, S.profiles?.[profile]?.label || "Folders"),
+        el("button", { class: "mx-icon", onclick: closeAll, "aria-label": "Close" }, icon("x"))),
       el("div", { class: "fb-rows" }, list,
-        el("p", { class: "note" }, "Describe what belongs in each folder so the labeler can apply your rules.")),
+        el("p", { class: "note" }, "Name each label and describe what belongs in its folder. The last label for each media type catches everything else.")),
       el("div", { class: "fb-foot" },
         el("button", { class: "mx-btn", onclick: add("photo") }, icon("plus"), "Photo folder"),
         el("button", { class: "mx-btn", onclick: add("video") }, icon("plus"), "Video folder"),
         el("span", { class: "spacer" }),
         el("button", { class: "mx-btn ghost", onclick: closeAll }, "Cancel"),
-        el("button", { class: "mx-btn solid", onclick: saveIt }, "Save folders")))));
+        el("button", { class: "mx-btn solid", onclick: saveIt }, "Save labels")))));
 }
 
 function openFolder(c) {
@@ -706,7 +765,8 @@ function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.fl
 /* ---------- start ---------- */
 function newSort() {
   mode = "setup";
-  pick.source = pick.dest = pick.peek = null; pick.typing = null;
+  pick.source = pick.dest = pick.peek = null; pick.typing = null; pick.fresh = false;
+  setCats(pickedCategories());
   resetStageForSetup(); setHeader(); renderPanel();
   setPill(null, "Choose your photos");
 }
@@ -718,18 +778,24 @@ async function init() {
     S = { source: "~/Pictures/Camera roll (demo)", platform: "demo" };
   } else {
     try { S = await api("/api/state"); } catch (e) { S = {}; }
-    setCats(S.categories);
+    pick.profile = S.job?.step === "sort" && (S.job.running || S.job.code) ? S.job.request?.profile || "standard"
+      : S.profile || "standard";
+    setCats(pickedCategories());
   }
   buildCards();
   if (!DEMO && S.job?.step === "sort" && (S.job.running || S.job.code)) {
     pick.source = S.job.request?.source || S.source;
     pick.dest = S.job.request?.dest;
     pick.sample = Boolean(S.job.request?.limit ?? S.limit);
-    pick.labeler = S.job.labeler || "claude";
+    pick.labeler = S.job.labeler || "codex";
     runInfo = { files: S.files, bytes: S.bytes };
     beginRunning();
   } else if (DEMO || (S.steps && S.steps.apply)) {
-    if (!DEMO) await loadLibrary(true);
+    if (!DEMO) {
+      setCats(S.result_categories || pickedCategories());
+      buildCards();
+      await loadLibrary(true);
+    }
     mode = "done"; sphereFromItems(); fillStatic(); showDone(false);
     pick.source = S.source;
   } else {
@@ -741,6 +807,8 @@ async function init() {
     if (mode === "done") newSort();
     await choose("source", params.get("source"));
     if (pick.source) await choose("dest", params.get("dest") || pick.source + " (sorted)");
+  } else if (!DEMO && S.output_missing && mode === "setup") {
+    await useLastFolders();
   }
   if (params.has("auto") && mode === "done") setTimeout(replay, 1200);
 }

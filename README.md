@@ -29,7 +29,8 @@ Codex downloads it, sets it up and opens the dashboard in your browser.
 
 1. **Choose folder**: pick the folder with your photos (a Google Photos or Apple Photos export, or any folder).
 2. Pick where the sorted copies should go. The default is right next to your photos.
-3. Press **Start sorting**.
+3. Choose **Camera Roll**, **Instagram Reels**, or **Cinematic Editing**. Select **Add or edit labels** to name your own folders and describe what goes in them.
+4. Press **Start sorting**.
 
 The dashboard estimates the time and shows progress as labels come in and copies are made.
 
@@ -48,6 +49,7 @@ The dashboard lives at **http://127.0.0.1:8765** while it's running. To open it 
 - tell Codex "open my photo sorter".
 
 Press **New sort** to sort a different folder, or send the copies somewhere else.
+Choose **Use last source and destination** to run the same pair again. The sorter normally reuses its saved scan and matching labels, even after you delete the sorted copies. Turn on **Sort from scratch** to scan the source again and ask for new labels. Use this when you want a fresh pass or have added files to the source.
 
 ## The dashboard
 
@@ -55,9 +57,11 @@ Press **New sort** to sort a different folder, or send the copies somewhere else
 |---|---|
 | **Sort with Codex** | Asks for the source or destination if needed, then starts sorting. Afterward, **Replay sort** replays the animation. Add `?d=20` to the address for a slower take. |
 | **New sort** | Pick a new photos folder and a new place for the copies. |
-| **Advanced** (in the setup card) | Edit the list of folders, select Codex, Claude, or Jev, or try 200 files first. |
+| **Stop sorting** | Stop the active run without closing the dashboard. **Resume sorting** reuses saved labels and retries an interrupted scan or copy. |
+| **Sorting preset** | Choose the standard camera roll categories or group assets for Instagram Reels or Cinematic Editing. Each media file gets one folder in the selected preset. |
+| **Advanced** (in the setup card) | Select Codex, Claude, or Jev, or try 200 files first. |
 | **Click a folder** | Browse everything in it. Click a photo to see it full size, flip with the arrow keys, and **Move to** another folder if it's wrong. |
-| **Edit folders** | Rename folders and describe what goes in each. |
+| **Edit labels** | Add, rename, or remove labels for the selected preset. |
 | **Open sorted folder** | Opens the result in Finder. |
 | ☀ / ☾ | Light or dark. |
 

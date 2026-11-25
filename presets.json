@@ -1,0 +1,20 @@
+{
+  "reels": [
+    {"key": "reels-cover", "kind": "photo", "label": "Reel covers", "emoji": "🖼️", "rule": "A striking, clear subject with a composition that would work as a Reel cover, especially in portrait orientation."},
+    {"key": "reels-insert", "kind": "photo", "label": "Photo inserts", "emoji": "📸", "rule": "Useful photos for cutaways, photo montages, product details, location context or before-and-after stories."},
+    {"key": "reels-other-photo", "kind": "photo", "label": "Other photos", "emoji": "📁", "rule": "Catch-all for photos and screenshots without a clear Reel use."},
+    {"key": "reels-hook", "kind": "video", "label": "Hooks and talking clips", "emoji": "🎙️", "rule": "A prominent person facing the camera, expressive reaction, or immediate attention-grabbing action. Prefer short portrait clips."},
+    {"key": "reels-broll", "kind": "video", "label": "Vertical B-roll", "emoji": "📱", "rule": "Portrait footage for a Reel cutaway, showing a place, detail, activity, product or movement."},
+    {"key": "reels-reframe", "kind": "video", "label": "Clips to reframe", "emoji": "✂️", "rule": "Landscape or square footage with a strong central subject that could work cropped for a vertical Reel."},
+    {"key": "reels-other-video", "kind": "video", "label": "Other clips", "emoji": "🎬", "rule": "Catch-all for footage without a clear Reel use, including basic screen recordings and ambiguous frames."}
+  ],
+  "cinematic": [
+    {"key": "cinematic-stills", "kind": "photo", "label": "Editorial stills", "emoji": "🖼️", "rule": "Well-composed stills that work as visual inserts or frames for the edit."},
+    {"key": "cinematic-reference", "kind": "photo", "label": "Reference and continuity", "emoji": "📋", "rule": "Behind-the-scenes, lighting, wardrobe, props and location references, or production notes."},
+    {"key": "cinematic-other-photo", "kind": "photo", "label": "Other photos", "emoji": "📁", "rule": "Catch-all for photos without a clear production or editing use."},
+    {"key": "cinematic-establish", "kind": "video", "label": "Establishing shots", "emoji": "🏞️", "rule": "Wide shots that introduce a location, scene or environment. Landscape framing often suits this folder."},
+    {"key": "cinematic-action", "kind": "video", "label": "Action and performance", "emoji": "🎭", "rule": "A main subject performing, speaking on camera, or doing a recognizable action. Judge by visible cues."},
+    {"key": "cinematic-broll", "kind": "video", "label": "B-roll and details", "emoji": "🎥", "rule": "Close-ups, textures, objects, inserts and atmosphere that could support a scene."},
+    {"key": "cinematic-other-video", "kind": "video", "label": "Other footage", "emoji": "🎬", "rule": "Catch-all for miscellaneous footage, screen recordings or clips with unclear editing use."}
+  ]
+}

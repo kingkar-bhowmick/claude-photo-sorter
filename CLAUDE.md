@@ -31,12 +31,14 @@ Never read `Photos Library.photoslibrary` directly.
 
 **Start sorting** runs everything in order and shows live progress, a timer and a time estimate:
 
-1. Scan: inventory, sha256, 256px previews plus 72px copies for the animation (skipped if the same folder was already scanned).
+1. Scan: inventory, sha256, 256px previews plus 72px copies for the animation (skipped if the same folder was already scanned unless **Sort from scratch** is selected).
 2. Duplicates: identical files and look-alikes (bursts, re-saved screenshots).
 3. Labels: `scripts/label_codex.py` sends contact sheets of small previews to Codex using the person's ChatGPT sign-in. It checks that every photo and video has a valid folder and saves labels for retry. Under **Advanced** they can pick Claude or Jev.
 4. Build folders: copies into `<their folder> (sorted)` or wherever they chose.
 
 Photos fly into their folders as labels come in. After sorting, **Replay sort** replays the animation (`?d=20` makes it slower), **New sort** picks new folders, clicking a folder browses it, and a photo can be moved to another folder from the full-size view.
+
+**Stop sorting** cancels the active step. Use **Resume sorting** to reuse finished labels and retry the interrupted work. If the sorted copies are missing, the dashboard offers the last source and destination again. **Sort from scratch** rescans and relabels, while the regular run can rebuild the copies with cached labels.
 
 ## If they'd rather do it in this chat
 
@@ -52,7 +54,7 @@ Photos fly into their folders as labels come in. After sorting, **Replay sort** 
 
 The open dashboard refreshes itself when these run.
 
-**Choosing folders.** Folders live in `categories.json` (`key`, `kind` photo or video, `label`, `emoji`, `rule`). The `rule` is what the model reads. Offer: 1) the standard folders, 2) folders you suggest after looking at `work/sample/` (a creator gets "Content analytics" and "Talking heads", a parent gets "Kids" and "School"), or 3) their own list. Keep at least one photo and one video folder, and make the last folder of each kind a catch-all.
+**Choosing folders.** Camera Roll labels live in `categories.json`. Instagram Reels and Cinematic Editing start from `presets.json` and save edits under `work/`. Each label has a `key`, a `kind` (photo or video), a `label`, an `emoji`, and a `rule` for the model. Use **Edit labels** to customize the selected preset. Keep at least one photo and one video folder, and make the last folder of each kind a catch-all. For manual commands, set `PHOTO_SORTER_PROFILE` to `reels` or `cinematic` for both labeling and copying.
 
 **Labelling yourself instead of `label_claude.py`.** Run `sheets.py`; each sheet in `work/sheets/` shows 30 previews tagged with ids. `VIDEO` tags need a video folder. Write `work/labels/<name>.json` as `{"id": "key"}` for every id. Use subagents for big libraries.
 
