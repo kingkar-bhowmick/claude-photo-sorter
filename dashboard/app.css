@@ -110,6 +110,7 @@ input, textarea, select { font: 13px var(--font); }
 .preset > label { display: block; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
 .preset .meta, .fresh .meta { line-height: 1.4; }
 .preset .mx-btn { margin-top: 8px; }
+.output-mode { margin-top: 14px; }
 .fresh { margin: 12px 0; padding-top: 6px; border-top: 1px solid var(--hair); }
 .fresh .meta { margin-top: 2px; }
 .fresh [role="status"] { margin-top: 4px; color: var(--ink-2); }

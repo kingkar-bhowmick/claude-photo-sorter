@@ -7,7 +7,7 @@ Records size, sha256, dimensions, video length and (for Google Takeout) the .jso
 date/GPS for each file, and makes a 256px square preview in dashboard/data/thumbs/.
 Read-only on your photos.
 """
-import argparse, hashlib, json, os, random, re, shutil, subprocess, sys
+import argparse, json, os, random, re, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image, ImageOps
@@ -20,7 +20,7 @@ except ImportError:
     pass
 
 sys.path.insert(0, os.path.dirname(__file__))
-from common import DATA, IMG, THUMBS, VID, save
+from common import DATA, THUMBS, VID, media_files, media_signature, save, sha256_file
 
 ap = argparse.ArgumentParser()
 ap.add_argument("source")
@@ -57,14 +57,6 @@ def sidecar(path):
     return None
 
 
-def sha(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def square(im, size=256):
     im = im.convert("RGB")
     s = min(im.size)
@@ -96,7 +88,7 @@ def process(args):
     ext = os.path.splitext(path)[1].lower()
     kind = "video" if ext in VID else "photo"
     rec = {"id": i, "path": path, "name": os.path.basename(path), "ext": ext, "kind": kind,
-           "bytes": os.path.getsize(path), "sha256": sha(path)}
+           "bytes": os.path.getsize(path), "sha256": sha256_file(path)}
     thumb = os.path.join(THUMBS, f"{i}.jpg")
     try:
         if kind == "video":
@@ -129,10 +121,10 @@ def process(args):
     return rec
 
 
-files = sorted(os.path.join(dp, f) for dp, _, fs in os.walk(src) for f in fs
-               if os.path.splitext(f)[1].lower() in IMG | VID and not f.startswith("._"))
+files = media_files(src)
 if not files:
     sys.exit("No photos or videos found in that folder.")
+signature = media_signature(files)
 if args.limit and args.limit < len(files):
     files = sorted(random.Random(0).sample(files, args.limit))
 print(f"Scanning {len(files)} files...", flush=True)
@@ -148,7 +140,7 @@ with ThreadPoolExecutor(8) as ex:
         if n % 200 == 0:
             print(f"  {n}/{len(files)}", flush=True)
 
-save(os.path.join(DATA, "source.json"), {"source": src, "limit": args.limit})
+save(os.path.join(DATA, "source.json"), {"source": src, "limit": args.limit, "media_signature": signature})
 save(inventory_path, recs)
 bad = [r["name"] for r in recs if "error" in r]
 print(f"Done: {len(recs)} files ({sum(r['kind'] == 'video' for r in recs)} videos), "

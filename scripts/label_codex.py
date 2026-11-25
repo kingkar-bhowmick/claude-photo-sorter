@@ -20,6 +20,20 @@ class CodexUnavailable(RuntimeError):
     pass
 
 
+def reuse_labels(old_files, old_labels, recs, cats, profile):
+    """Use unchanged files' labels after a rescan gives them new IDs."""
+    by_file = {(r["path"], r["sha256"]): old_labels[str(r["id"])] for r in old_files if str(r["id"]) in old_labels}
+    cache = codex_cache(recs, cats, profile)
+    for number, start in enumerate(range(0, len(recs), FILES_PER_SHEET), 1):
+        batch = recs[start:start + FILES_PER_SHEET]
+        carried = valid_labels(batch, cats, {str(r["id"]): by_file.get((r["path"], r["sha256"])) for r in batch})
+        if carried:
+            path = os.path.join(cache, f"sheet_{number:04d}.json")
+            existing = valid_labels(batch, cats, load(path, {}))
+            if carried.keys() - existing.keys():
+                save(path, carried | existing)
+
+
 def codex_env():
     env = os.environ.copy()
     for name in ("CODEX_API_KEY", "OPENAI_API_KEY"):

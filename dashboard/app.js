@@ -64,7 +64,7 @@ let S = {};                                 // server state
 let mode = "loading";                       // setup | running | done
 let cats = [], catBy = {}, items = [], byId = {}, dupeIds = new Set(), labels = {};
 const pick = { source: null, dest: null, peek: null, advanced: false, labeler: "codex",
-  sample: false, typing: null, profile: "standard", fresh: false };
+  sample: false, typing: null, profile: "standard", fresh: false, outputMode: "add" };
 const LABELER_NAMES = { codex: "Codex", claude: "Claude", jev: "Jev" };
 const PROFILES = {
   standard: "Sort by subject, such as travel, food, people, and screenshots.",
@@ -237,6 +237,13 @@ function showDone(celebrateNow) {
   $("bigF").textContent = `${folders} ${folders === 1 ? "folder" : "folders"}`;
   $("chipD").textContent = `🗂️ ${fmt(stats.dupes)} duplicates`;
   $("chipS").textContent = `💾 ${size(stats.saved)} freed`;
+  const summary = S.copy_summary;
+  $("copySummary").hidden = !summary;
+  if (summary) {
+    const counts = [`${fmt(summary.added)} copied`, `${fmt(summary.reused)} already present`];
+    if (summary.removed) counts.push(`${fmt(summary.removed)} old copies removed`);
+    $("copySummary").textContent = counts.join(" · ");
+  }
   if (celebrateNow) { countUp($("bigN"), items.length, 900); confetti(); } else $("bigN").textContent = fmt(items.length);
   setPill("live", "Sorted");
 }
@@ -414,6 +421,14 @@ function setupCard() {
     el("p", { class: "meta" }, PROFILES[pick.profile]),
     el("button", { class: "mx-btn small", onclick: openFolders }, icon("pencil"), "Add or edit labels")));
   const missing = S.output_missing && S.sorted === pick.dest;
+  if (S.output_modes) box.append(el("div", { class: "preset output-mode" },
+    el("label", { for: "output-mode" }, "Existing destination"),
+    el("select", { class: "field", id: "output-mode", "aria-describedby": "output-mode-help", onchange: e => {
+      pick.outputMode = e.target.value; $("output-mode-help").textContent = outputModeHelp();
+    } },
+    el("option", { value: "add", selected: pick.outputMode === "add" }, "Add to existing folders"),
+    el("option", { value: "replace", selected: pick.outputMode === "replace" }, "Replace previous sorted copies")),
+    el("p", { class: "meta", id: "output-mode-help" }, outputModeHelp())));
   box.append(el("div", { class: "fresh" },
     missing ? el("p", { class: "meta", role: "status" }, "The previous sorted copies are missing from this destination.") : null,
     el("label", { class: "check-row" },
@@ -434,6 +449,11 @@ function setupCard() {
 
 function freshHelp() {
   return pick.fresh ? "Scan the source again and generate new labels for this preset." : "Reuse the saved scan and matching labels when available.";
+}
+
+function outputModeHelp() {
+  return pick.outputMode === "replace" ? "Remove previous sorter copies after the new copies are ready. Other files stay."
+    : "Keep existing copies in place. Add new files and skip copies already present.";
 }
 
 function advancedBox(files) {
@@ -511,6 +531,7 @@ async function startSorting(retry = false) {
   const files = pick.peek ? pick.peek.photos + pick.peek.videos : 0;
   starting = true;
   try {
+    if (!S.output_modes) return toast("Restart the photo sorter to enable the destination options.");
     if (pick.labeler === "jev") {
       if (!S.jev_key) return toast("Add JEV_KEY=your-key to a .env file in this folder to use Jev.");
       if (!await confirmPaid(Math.min(files || S.files || 0, pick.sample ? 200 : Infinity))) return;
@@ -519,7 +540,7 @@ async function startSorting(retry = false) {
     if (pick.labeler === "codex" && !S.codex_cli) return toast("Install the Codex CLI, then reopen the photo sorter.");
     if (pick.labeler === "claude" && S.claude_cli === false) return toast("Install Claude Code or choose Codex under Advanced.");
     S = await api("/api/sort", { source: pick.source, dest: pick.dest, labeler: pick.labeler, limit: pick.sample ? 200 : 0,
-      profile: pick.profile, fresh: retry === true ? Boolean(S.job?.fresh_pending) : pick.fresh });
+      profile: pick.profile, fresh: retry === true ? Boolean(S.job?.fresh_pending) : pick.fresh, output_mode: pick.outputMode });
     pick.fresh = false;
     runInfo = { files: pick.sample ? Math.min(200, files) : files, bytes: pick.peek ? pick.peek.bytes * (pick.sample ? Math.min(1, 200 / Math.max(1, files)) : 1) : 0 };
     beginRunning();
@@ -766,6 +787,7 @@ function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.fl
 function newSort() {
   mode = "setup";
   pick.source = pick.dest = pick.peek = null; pick.typing = null; pick.fresh = false;
+  pick.outputMode = "add";
   setCats(pickedCategories());
   resetStageForSetup(); setHeader(); renderPanel();
   setPill(null, "Choose your photos");
@@ -788,6 +810,7 @@ async function init() {
     pick.dest = S.job.request?.dest;
     pick.sample = Boolean(S.job.request?.limit ?? S.limit);
     pick.labeler = S.job.labeler || "codex";
+    pick.outputMode = S.job.request?.output_mode || "add";
     runInfo = { files: S.files, bytes: S.bytes };
     beginRunning();
   } else if (DEMO || (S.steps && S.steps.apply)) {

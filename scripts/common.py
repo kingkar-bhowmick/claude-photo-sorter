@@ -24,6 +24,28 @@ IMG = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif", ".bmp", ".tif
 VID = {".mov", ".mp4", ".m4v", ".3gp", ".avi", ".mkv", ".webm"}
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def media_files(source):
+    return sorted(os.path.join(folder, name) for folder, _, names in os.walk(source)
+                  for name in names if not name.startswith("._")
+                  and os.path.splitext(name)[1].lower() in IMG | VID)
+
+
+def media_signature(files):
+    digest = hashlib.sha256()
+    for path in files:
+        info = os.stat(path)
+        digest.update(repr((path, info.st_size, info.st_mtime_ns)).encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()
+
+
 def load(path, default=None):
     try:
         with open(path) as f:

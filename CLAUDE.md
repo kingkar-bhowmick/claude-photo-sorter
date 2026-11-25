@@ -31,10 +31,10 @@ Never read `Photos Library.photoslibrary` directly.
 
 **Start sorting** runs everything in order and shows live progress, a timer and a time estimate:
 
-1. Scan: inventory, sha256, 256px previews plus 72px copies for the animation (skipped if the same folder was already scanned unless **Sort from scratch** is selected).
+1. Scan: inventory, sha256, 256px previews plus 72px copies for the animation (reuses the saved scan when the same source is unchanged unless **Sort from scratch** is selected).
 2. Duplicates: identical files and look-alikes (bursts, re-saved screenshots).
 3. Labels: `scripts/label_codex.py` sends contact sheets of small previews to Codex using the person's ChatGPT sign-in. It checks that every photo and video has a valid folder and saves labels for retry. Under **Advanced** they can pick Claude or Jev.
-4. Build folders: copies into `<their folder> (sorted)` or wherever they chose.
+4. Build folders: **Add to existing folders** keeps previous copies, skips exact matches recorded by the sorter, and files new copies alongside them. **Replace previous sorted copies** removes obsolete sorter-managed copies it can verify after the current copies are ready.
 
 Photos fly into their folders as labels come in. After sorting, **Replay sort** replays the animation (`?d=20` makes it slower), **New sort** picks new folders, clicking a folder browses it, and a photo can be moved to another folder from the full-size view.
 

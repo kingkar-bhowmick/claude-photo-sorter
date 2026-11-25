@@ -49,7 +49,12 @@ The dashboard lives at **http://127.0.0.1:8765** while it's running. To open it 
 - tell Codex "open my photo sorter".
 
 Press **New sort** to sort a different folder, or send the copies somewhere else.
-Choose **Use last source and destination** to run the same pair again. The sorter normally reuses its saved scan and matching labels, even after you delete the sorted copies. Turn on **Sort from scratch** to scan the source again and ask for new labels. Use this when you want a fresh pass or have added files to the source.
+Choose **Use last source and destination** to run the same pair again. The sorter checks for changes in the source and reuses Codex labels for unchanged files. Turn on **Sort from scratch** to scan the source again and generate new labels for the whole run.
+
+- **Add to existing folders** keeps earlier copies in place, skips matching copies that are already there, and adds new files to the same category folders. Different files with the same name get distinct filenames.
+- **Replace previous sorted copies** applies the current sort to the destination. It removes obsolete copies the sorter can verify against its report after writing the current copies. Manually added or modified files stay.
+
+The dashboard shows the latest run. The destination's reports include earlier copies kept by **Add to existing folders**.
 
 ## The dashboard
 
@@ -89,7 +94,22 @@ Claude remains available under **Advanced** for users signed in to Claude Code. 
 ./start.sh          # opens http://127.0.0.1:8765
 ```
 
-Run `.venv/bin/python scripts/label_codex.py` after scanning to label from the command line, then run `.venv/bin/python scripts/apply.py "<output folder>" --labeler codex` to copy the files. See `CLAUDE.md` for all commands. The sorter needs Python 3.9+ and ffmpeg for video previews (`brew install ffmpeg`).
+Run `.venv/bin/python scripts/label_codex.py` after scanning to label from the command line, then run `.venv/bin/python scripts/apply.py "<output folder>" --labeler codex` to add the files. Pass `--output-mode replace` to replace the previous sorted copies. See `CLAUDE.md` for all commands. The sorter needs Python 3.9+ and ffmpeg for video previews (`brew install ffmpeg`).
+
+
+## To Stop The Dashboard Running 
+
+
+```bash
+sorter_pid=$(lsof -tiTCP:8765 -sTCP:LISTEN)
+if [[ -n "$sorter_pid" && "$(ps -p "$sorter_pid" -o args=)" == *scripts/server.py* ]]; then
+  kill -TERM "$sorter_pid"
+fi
+
+Then verify
+
+lsof -nP -iTCP:8765 -sTCP:LISTEN
+```
 
 ## License
 

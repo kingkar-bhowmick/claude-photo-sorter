@@ -10,10 +10,11 @@ import csv, glob, hashlib, io, json, mimetypes, os, random, re, shutil, signal, 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(__file__))
-from apply import apply_lock
+from apply import OUTPUT_MODES, apply_lock
 from common import (CODEX_LABELS, DATA, IMG, JEV_OUT, LABELS, PROFILE_ENV, PROFILES, ROOT, VID, WORK,
-                    categories, category_path, codex_cache, is_within, load, overrides_path, read_codex_labels,
-                    save, sort_destination, valid_labels)
+                    categories, category_path, codex_cache, is_within, load, media_files, media_signature,
+                    overrides_path, read_codex_labels, save, sort_destination, valid_labels)
+from label_codex import reuse_labels
 
 PORT = int(os.environ.get("PORT", 8765))
 DASH = os.path.join(ROOT, "dashboard")
@@ -68,10 +69,11 @@ def state():
     claude_files = glob.glob(os.path.join(LABELS, "*.json"))
     profiles = {key: {"label": title, "categories": categories(key)} for key, title in PROFILES.items()}
     return {
-        "categories": profiles["standard"]["categories"], "profiles": profiles,
+        "categories": profiles["standard"]["categories"], "profiles": profiles, "output_modes": OUTPUT_MODES,
         "result_categories": load(os.path.join(DATA, "categories.json")) if applied else None,
         "source": src.get("source"), "limit": src.get("limit"), "sorted": output, "profile": profile,
         "output_missing": missing,
+        "copy_summary": src.get("copy_summary") if applied and not missing else None,
         "files": len(inv), "bytes": sum(r["bytes"] for r in inv),
         "steps": {
             "scan": bool(inv),
@@ -221,6 +223,9 @@ def sort_all(args):
     labeler = args.get("labeler") or "codex"
     profile = args.get("profile") or "standard"
     fresh = args.get("fresh", False)
+    output_mode = args.get("output_mode", "add")
+    if output_mode not in OUTPUT_MODES:
+        raise ValueError("Choose how to handle existing copies in the destination.")
     if profile not in PROFILES or type(fresh) is not bool:
         raise ValueError("Choose a sorting preset and whether to start from scratch.")
     if labeler not in LABELERS:
@@ -233,10 +238,9 @@ def sort_all(args):
         raise ValueError("Claude Code is not installed. Install it or choose Codex under Advanced.")
     if labeler == "jev" and not has_jev_key():
         raise ValueError("Add JEV_KEY=your-key to a .env file in this folder to use Jev.")
-    src = load(os.path.join(DATA, "source.json"), {})
-    have = os.path.exists(os.path.join(DATA, "inventory.json"))
-    need_scan = fresh or not have or src.get("source") != source or int(src.get("limit") or 0) != limit
-    phases = (["scan"] if need_scan else []) + ["dupes", "label", "apply"]
+    phases = ["dupes", "label", "apply"]
+    source_file = os.path.join(DATA, "source.json")
+    inventory_file = os.path.join(DATA, "inventory.json")
 
     def phase(name, script, *extra):
         return run_phase(name, [os.path.join(SCRIPTS, script), *extra], profile)
@@ -245,12 +249,27 @@ def sort_all(args):
         # Hold the copy lock while changing the inventory and labels as well.
         # apply.py takes the lock itself when the copy phase starts.
         with apply_lock():
+            src = load(source_file, {})
+            same_source = src.get("source") == source
+            need_scan = (fresh or not os.path.isfile(inventory_file) or not same_source
+                         or int(src.get("limit") or 0) != limit
+                         or src.get("media_signature") != media_signature(media_files(source)))
             if job["stopping"]:
                 return 130
             if need_scan:
+                with job_lock:
+                    job["phases"] = ["scan", *phases]
+                old_files, old_labels = [], {}
+                if labeler == "codex" and same_source and not fresh:
+                    old_files = load(inventory_file, [])
+                    old_labels = read_codex_labels(old_files, categories(profile), profile)
+                if job["stopping"]:
+                    return 130
                 clear_library()
                 if phase("scan", "scan.py", source, *(["--limit", str(limit)] if limit else [])):
                     return 1
+                if old_labels:
+                    reuse_labels(old_files, old_labels, load(inventory_file, []), categories(profile), profile)
             if fresh:
                 recs = load(os.path.join(DATA, "inventory.json"), [])
                 cache = codex_cache(recs, categories(profile), profile)
@@ -279,9 +298,10 @@ def sort_all(args):
                 if not total or len(live_labels()) < 0.95 * total:
                     return 1
                 job["log"].append("A few files could not be labelled; they go to the catch-all folders.")
-        return phase("apply", "apply.py", dest, *(["--labeler", "codex"] if labeler == "codex" else []))
+        return phase("apply", "apply.py", dest, "--output-mode", output_mode,
+                     *(["--labeler", "codex"] if labeler == "codex" else []))
     start_job("sort", phases, body, labeler, {"source": source, "dest": dest, "limit": limit,
-                                           "profile": profile, "fresh": fresh})
+                                           "profile": profile, "fresh": fresh, "output_mode": output_mode})
 
 
 def run_single(step, args):
@@ -295,6 +315,8 @@ def run_single(step, args):
     }
     if step == "apply" and args.get("labeler") == "codex":
         cmds[step] += ["--labeler", "codex"]
+    if step == "apply" and "output_mode" in args:
+        cmds[step] += ["--output-mode", args["output_mode"]]
     if step not in cmds:
         raise ValueError("unknown step")
 
